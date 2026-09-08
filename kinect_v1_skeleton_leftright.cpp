@@ -3,7 +3,9 @@
 // Recupere le flux squelette de la Kinect v1 (modele 1414) via le SDK
 // Kinect for Windows v1.8, et affiche dans quelle zone (gauche, milieu,
 // droite) se trouve le joueur en fonction de la position X absolue du
-// joint hip_center.
+// joint hip_center, ainsi que sa posture (debout, saut, accroupi) en
+// fonction de la position Y de ce meme joint par rapport a une position
+// de reference calibree au moment du verrouillage du squelette.
 //
 // Un flux video couleur peut etre active/desactive a tout moment en
 // appuyant sur la touche 'V' (variable booleenne g_videoStreamEnabled).
@@ -13,11 +15,15 @@
 // Setup du projet Visual Studio :
 //   - Includes : $(KINECTSDK10_DIR)inc
 //   - Lib dirs : $(KINECTSDK10_DIR)lib\x86  (ou \x64 selon la config)
-//   - Linker > Input > Additional Dependencies : Kinect10.lib
-//   (Gdi32.lib et User32.lib sont deja lies par defaut dans un projet
-//    Win32/Console standard)
+//   - Linker > Input > Additional Dependencies :
+//         Kinect10.lib Gdi32.lib User32.lib
 //   ($(KINECTSDK10_DIR) est une variable d'environnement definie
 //    automatiquement par l'installeur du SDK)
+//
+// Compilation en ligne de commande (cl.exe) :
+//   cl /EHsc kinect_v1_skeleton_leftright.cpp /I "%KINECTSDK10_DIR%inc" ^
+//      /link /LIBPATH:"%KINECTSDK10_DIR%lib\x86" ^
+//      Kinect10.lib Gdi32.lib User32.lib
 
 #include <windows.h>
 #include <NuiApi.h>
@@ -57,6 +63,76 @@ static const char* ZoneToString(Zone z)
         case Zone::DROITE: return "DROITE";
         default:           return "MILIEU";
     }
+}
+
+// --- Detection saut / accroupi (posture) --------------------------------
+//
+// On compare la position Y du hip_center a une position de reference
+// (g_baselineHipY), calibree automatiquement sur les premieres frames
+// suivant le verrouillage d'un nouveau squelette (le joueur est suppose
+// se tenir debout, en position neutre, a ce moment-la).
+//
+// Delta positif -> le joueur est plus haut que la reference -> SAUT
+// Delta negatif -> le joueur est plus bas que la reference   -> ACCROUPI
+
+enum class Posture { ACCROUPI, DEBOUT, SAUT };
+
+// Seuils de declenchement, en metres, par rapport a la reference.
+static const float JUMP_Y_THRESHOLD    =  0.12f; // au-dessus -> SAUT
+static const float CROUCH_Y_THRESHOLD  = -0.15f; // en dessous -> ACCROUPI
+
+// Nombre de frames utilisees pour etablir la position de reference au
+// moment du verrouillage (moyenne glissante simple).
+static const int CALIBRATION_FRAME_COUNT = 15;
+
+static bool  g_hasBaselineY        = false;
+static float g_baselineHipY        = 0.0f;
+static int   g_calibrationSamples  = 0;
+static float g_calibrationSum      = 0.0f;
+
+// Passe a true pour afficher le delta Y brut (y - reference) a CHAQUE
+// frame, meme sans franchissement de seuil. Tres utile pour calibrer
+// JUMP_Y_THRESHOLD / CROUCH_Y_THRESHOLD a la main en observant les
+// valeurs reelles produites par un saut ou un accroupissement.
+static const bool DEBUG_POSTURE_DELTA = false;
+
+// Un squelette en accroupissement (ou partiellement hors cadre) bascule
+// souvent de NUI_SKELETON_TRACKED vers NUI_SKELETON_POSITION_ONLY : les
+// joints individuels ne sont plus calcules, mais la position globale
+// (donc le hip_center) reste valide. Si on exigeait NUI_SKELETON_TRACKED
+// strictement, on perdait le verrou -> reinitialisation de la reference
+// Y au moment meme ou le joueur s'accroupit, ce qui annulait totalement
+// la detection (la reference "collait" toujours a la posture courante).
+static bool IsSkeletonStateUsable(NUI_SKELETON_TRACKING_STATE state)
+{
+    return state == NUI_SKELETON_TRACKED || state == NUI_SKELETON_POSITION_ONLY;
+}
+
+static Posture GetPostureFromY(float currentY, float baselineY)
+{
+    float delta = currentY - baselineY;
+    if (delta > JUMP_Y_THRESHOLD)   return Posture::SAUT;
+    if (delta < CROUCH_Y_THRESHOLD) return Posture::ACCROUPI;
+    return Posture::DEBOUT;
+}
+
+static const char* PostureToString(Posture p)
+{
+    switch (p)
+    {
+        case Posture::SAUT:     return "SAUT";
+        case Posture::ACCROUPI: return "ACCROUPI";
+        default:                return "DEBOUT";
+    }
+}
+
+// Reinitialise la calibration de la reference Y ; a appeler a chaque
+// fois qu'un nouveau squelette est verrouille.
+static void ResetYCalibration()
+{
+    g_hasBaselineY       = false;
+    g_calibrationSamples = 0;
+    g_calibrationSum     = 0.0f;
 }
 
 // --- Flux video couleur (fenetre Win32 + GDI natif) ---------------------
@@ -305,6 +381,11 @@ bool InitKinect()
 // entrerait dans le champ tant que celui-ci reste visible. Si le
 // joueur verrouille sort du champ, le verrou est relache et le
 // prochain squelette tracke prend sa place.
+//
+// Pour chaque frame du joueur verrouille, affiche (sur changement) :
+//   - la zone gauche/milieu/droite (axe X)
+//   - la posture debout/saut/accroupi (axe Y, relative a une reference
+//     calibree automatiquement juste apres le verrouillage)
 void ProcessSkeletonFrame()
 {
     NUI_SKELETON_FRAME skeletonFrame = {0};
@@ -314,6 +395,9 @@ void ProcessSkeletonFrame()
     static Zone lastZone;
     static bool hasLastZone = false;
 
+    static Posture lastPosture;
+    static bool hasLastPosture = false;
+
     const NUI_SKELETON_DATA* pLocked = NULL;
 
     // Cherche le squelette deja verrouille dans cette frame
@@ -322,7 +406,7 @@ void ProcessSkeletonFrame()
         for (int i = 0; i < NUI_SKELETON_COUNT; ++i)
         {
             const NUI_SKELETON_DATA& s = skeletonFrame.SkeletonData[i];
-            if (s.eTrackingState == NUI_SKELETON_TRACKED &&
+            if (IsSkeletonStateUsable(s.eTrackingState) &&
                 s.dwTrackingID == g_lockedTrackingID)
             {
                 pLocked = &s;
@@ -335,7 +419,9 @@ void ProcessSkeletonFrame()
             // Le joueur verrouille a quitte le champ : on relache le verrou
             std::cout << "Joueur perdu, en attente d'un nouveau squelette...\n";
             g_lockedTrackingID = 0;
-            hasLastZone = false;
+            hasLastZone     = false;
+            hasLastPosture  = false;
+            ResetYCalibration();
         }
     }
 
@@ -345,12 +431,13 @@ void ProcessSkeletonFrame()
         for (int i = 0; i < NUI_SKELETON_COUNT; ++i)
         {
             const NUI_SKELETON_DATA& s = skeletonFrame.SkeletonData[i];
-            if (s.eTrackingState == NUI_SKELETON_TRACKED)
+            if (IsSkeletonStateUsable(s.eTrackingState))
             {
                 g_lockedTrackingID = s.dwTrackingID;
                 pLocked = &s;
                 std::cout << "Squelette verrouille (TrackingID = "
                           << g_lockedTrackingID << ")\n";
+                ResetYCalibration();
                 break;
             }
         }
@@ -361,22 +448,67 @@ void ProcessSkeletonFrame()
 
     // hip_center = joint le plus stable pour suivre la position
     // globale du corps (en metres, X negatif = gauche du capteur,
-    // X positif = droite du capteur)
+    // X positif = droite du capteur, Y positif = vers le haut)
     const Vector4& hipCenter = pLocked->SkeletonPositions[NUI_SKELETON_POSITION_HIP_CENTER];
     float currentX = hipCenter.x;
+    float currentY = hipCenter.y;
 
-    Zone currentZone = GetZoneFromX(currentX);
-
-    // N'affiche que lors d'un changement de zone pour ne pas spammer la
-    // console ; retire cette condition si tu veux l'etat a chaque frame.
-    if (!hasLastZone || currentZone != lastZone)
+    // --- Calibration de la reference Y --------------------------------
+    // Pendant les premieres frames suivant le verrouillage, on suppose
+    // que le joueur est en position neutre (debout) et on moyenne sa
+    // position Y pour en faire la reference du "sol" de detection.
+    if (!g_hasBaselineY)
     {
-        std::cout << "Zone : " << ZoneToString(currentZone)
-                   << " (x = " << currentX << " m)\n";
+        g_calibrationSum += currentY;
+        ++g_calibrationSamples;
+
+        if (g_calibrationSamples >= CALIBRATION_FRAME_COUNT)
+        {
+            g_baselineHipY  = g_calibrationSum / g_calibrationSamples;
+            g_hasBaselineY  = true;
+            std::cout << "Reference posture calibree (y = "
+                       << g_baselineHipY << " m)\n";
+        }
+        else
+        {
+            // Tant que la calibration n'est pas terminee, on ne peut pas
+            // encore evaluer la posture de facon fiable.
+            return;
+        }
     }
 
-    lastZone    = currentZone;
-    hasLastZone = true;
+    Zone currentZone       = GetZoneFromX(currentX);
+    Posture currentPosture = GetPostureFromY(currentY, g_baselineHipY);
+    float  deltaY          = currentY - g_baselineHipY;
+
+    // Mode debug : affiche le delta Y brut a CHAQUE frame, meme sans
+    // franchissement de seuil. Sert a lire les valeurs reelles produites
+    // par un saut/accroupissement pour regler JUMP_Y_THRESHOLD et
+    // CROUCH_Y_THRESHOLD en connaissance de cause.
+    if (DEBUG_POSTURE_DELTA)
+    {
+        std::cout << "[debug] deltaY = " << deltaY
+                   << " m (y = " << currentY
+                   << ", ref = " << g_baselineHipY << ")\n";
+    }
+
+    // N'affiche que lors d'un changement de zone ou de posture pour ne
+    // pas spammer la console ; retire ces conditions si tu veux l'etat
+    // a chaque frame.
+    if (!hasLastZone || currentZone != lastZone ||
+        !hasLastPosture || currentPosture != lastPosture)
+    {
+        std::cout << "Zone : " << ZoneToString(currentZone)
+                   << " (x = " << currentX << " m)"
+                   << " | Posture : " << PostureToString(currentPosture)
+                   << " (y = " << currentY
+                   << " m, ref = " << g_baselineHipY << " m)\n";
+    }
+
+    lastZone       = currentZone;
+    hasLastZone    = true;
+    lastPosture    = currentPosture;
+    hasLastPosture = true;
 }
 
 int main()
