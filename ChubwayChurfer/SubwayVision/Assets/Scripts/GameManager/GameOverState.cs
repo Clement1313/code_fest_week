@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using UnityEngine.UI;
 #if UNITY_ANALYTICS
 using UnityEngine.Analytics;
@@ -30,10 +30,13 @@ public class GameOverState : AState
 		miniLeaderboard.playerEntry.score.text = trackManager.score.ToString();
 		miniLeaderboard.Populate();
 
-        if (PlayerData.instance.AnyMissionComplete())
-            StartCoroutine(missionPopup.Open());
-        else
-            missionPopup.gameObject.SetActive(false);
+        if (missionPopup != null)
+        {
+            if (PlayerData.instance.AnyMissionComplete())
+                StartCoroutine(missionPopup.Open());
+            else
+                missionPopup.gameObject.SetActive(false);
+        }
 
 		CreditCoins();
 
@@ -72,7 +75,7 @@ public class GameOverState : AState
 
 	public void GoToStore()
     {
-        UnityEngine.SceneManagement.SceneManager.LoadScene("shop", UnityEngine.SceneManagement.LoadSceneMode.Additive);
+        // Disabled for simple demo
     }
 
 

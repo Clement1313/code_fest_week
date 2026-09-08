@@ -30,6 +30,7 @@ public class CharacterInputController : MonoBehaviour
 	public List<Consumable> consumables { get { return m_ActiveConsumables; } }
 	public bool isJumping { get { return m_Jumping; } }
 	public bool isSliding { get { return m_Sliding; } }
+	public int currentLane { get { return m_CurrentLane; } }
 
 	[Header("Controls")]
 	public float jumpLength = 2.0f;     // Distance jumped
@@ -170,16 +171,23 @@ public class CharacterInputController : MonoBehaviour
 
     protected bool TutorialMoveCheck(int tutorialLevel)
     {
-        tutorialWaitingForValidation = currentTutorialLevel != tutorialLevel;
+        // The integrated tutorial only displays guidance. Inputs remain fully
+        // available while the runner keeps moving.
+        return !TrackManager.instance.isTutorial || !tutorialWaitingForValidation ||
+            currentTutorialLevel == tutorialLevel;
+    }
 
-        return (!TrackManager.instance.isTutorial || currentTutorialLevel >= tutorialLevel);
+    protected void ValidateTutorialMove(int tutorialLevel)
+    {
+        if (TrackManager.instance.isTutorial && currentTutorialLevel == tutorialLevel)
+            tutorialWaitingForValidation = false;
     }
 
 	protected void Update ()
     {
 #if UNITY_EDITOR || UNITY_STANDALONE
-        // Use key input in editor or standalone
-        // disabled if it's tutorial and not thecurrent right tutorial level (see func TutorialMoveCheck)
+        // Use key input in editor or standalone. The integrated tutorial keeps
+        // every command available and only displays contextual guidance.
 
         if (Input.GetKeyDown(KeyCode.LeftArrow) && TutorialMoveCheck(0))
         {
@@ -331,6 +339,7 @@ public class CharacterInputController : MonoBehaviour
             character.animator.SetBool(s_JumpingHash, true);
 			m_Audio.PlayOneShot(character.jumpSound);
 			m_Jumping = true;
+            ValidateTutorialMove(1);
         }
     }
 
@@ -364,6 +373,7 @@ public class CharacterInputController : MonoBehaviour
 			m_Sliding = true;
 
 			characterCollider.Slide(true);
+            ValidateTutorialMove(2);
 		}
 	}
 
@@ -391,6 +401,7 @@ public class CharacterInputController : MonoBehaviour
 
         m_CurrentLane = targetLane;
         m_TargetPosition = new Vector3((m_CurrentLane - 1) * trackManager.laneOffset, 0, 0);
+        ValidateTutorialMove(0);
     }
 
     public void UseInventory()

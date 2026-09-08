@@ -45,7 +45,6 @@ public class TrackSegment : MonoBehaviour
         GetPointAt(t, out pos, out rot);
     }
 
-
 	// Interpolation parameter t is clamped between 0 and 1.
 	public void GetPointAt(float t, out Vector3 pos, out Quaternion rot)
     {

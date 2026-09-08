@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEditor;
@@ -73,7 +73,7 @@ public class TrackManager : MonoBehaviour
     public float speedRatio { get { return (m_Speed - minSpeed) / (maxSpeed - minSpeed); } }
     public int currentZone { get { return m_CurrentZone; } }
 
-    public TrackSegment currentSegment { get { return m_Segments[0]; } }
+    public TrackSegment currentSegment { get { return m_Segments.Count > 0 ? m_Segments[0] : null; } }
     public List<TrackSegment> segments { get { return m_Segments; } }
     public ThemeData currentTheme { get { return m_CurrentThemeData; } }
 
@@ -302,7 +302,7 @@ public class TrackManager : MonoBehaviour
     private int _spawnedSegments = 0;
     void Update()
     {
-        while (_spawnedSegments < (m_IsTutorial ? 4 : k_DesiredSegmentCount))
+        while (_spawnedSegments < (m_IsTutorial ? 2 : k_DesiredSegmentCount))
         {
             StartCoroutine(SpawnNewSegment());
             _spawnedSegments++;
@@ -338,12 +338,15 @@ public class TrackManager : MonoBehaviour
             return;
 
         float scaledSpeed = m_Speed * Time.deltaTime;
-        m_ScoreAccum += scaledSpeed;
-        m_CurrentZoneDistance += scaledSpeed;
+        if (!m_IsTutorial)
+        {
+            m_ScoreAccum += scaledSpeed;
+            int intScore = Mathf.FloorToInt(m_ScoreAccum);
+            if (intScore != 0) AddScore(intScore);
+            m_ScoreAccum -= intScore;
+        }
 
-        int intScore = Mathf.FloorToInt(m_ScoreAccum);
-        if (intScore != 0) AddScore(intScore);
-        m_ScoreAccum -= intScore;
+        m_CurrentZoneDistance += scaledSpeed;
 
         m_TotalWorldDistance += scaledSpeed;
         m_CurrentSegmentDistance += scaledSpeed;
@@ -484,6 +487,16 @@ public class TrackManager : MonoBehaviour
             m_CurrentZone = 0;
 
         m_CurrentZoneDistance = 0;
+    }
+
+    public void SwitchToRegularTheme()
+    {
+        m_CurrentThemeData = ThemeDatabase.GetThemeData(PlayerData.instance.themes[PlayerData.instance.usedTheme]);
+        m_CurrentZone = 0;
+        m_CurrentZoneDistance = 0;
+        skyMeshFilter.sharedMesh = m_CurrentThemeData.skyMesh;
+        RenderSettings.fogColor = m_CurrentThemeData.fogColor;
+        RenderSettings.fog = true;
     }
 
     private readonly Vector3 _offScreenSpawnPos = new Vector3(-100f, -100f, -100f);
@@ -671,6 +684,9 @@ public class TrackManager : MonoBehaviour
 
     public void AddScore(int amount)
     {
+        if (m_IsTutorial)
+            return;
+
         int finalAmount = amount;
         m_Score += finalAmount * m_Multiplier;
     }

@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using UnityEngine.UI;
 using System.Collections;
 using System.Collections.Generic;
@@ -19,6 +19,7 @@ public class LoadoutState : AState
 
     [Header("Char UI")]
     public Text charNameDisplay;
+	public Sprite gameLogoSprite;
 	public RectTransform charSelect;
 	public Transform charPosition;
 
@@ -73,14 +74,14 @@ public class LoadoutState : AState
 
     public override void Enter(AState from)
     {
-        tutorialBlocker.SetActive(!PlayerData.instance.tutorialDone);
-        tutorialPrompt.SetActive(false);
+        if (tutorialBlocker != null) tutorialBlocker.SetActive(false);
+        if (tutorialPrompt != null) tutorialPrompt.SetActive(false);
 
         inventoryCanvas.gameObject.SetActive(true);
-        missionPopup.gameObject.SetActive(false);
+        if (missionPopup != null) missionPopup.gameObject.SetActive(false);
 
-        charNameDisplay.text = "";
-        themeNameDisplay.text = "";
+        SetupGameLogo();
+        if (themeNameDisplay != null) themeNameDisplay.text = "";
 
         k_UILayer = LayerMask.NameToLayer("UI");
 
@@ -109,9 +110,48 @@ public class LoadoutState : AState
         Refresh();
     }
 
+    void SetupGameLogo()
+    {
+        if (charNameDisplay == null || gameLogoSprite == null)
+            return;
+
+        // The character name used to be written here (for example "Trash Cat").
+        // Keep the same well-positioned UI object, but render the game logo instead.
+        charNameDisplay.text = "";
+        charNameDisplay.enabled = false;
+
+        const string logoObjectName = "GameLogo";
+        Transform existingLogo = charNameDisplay.transform.Find(logoObjectName);
+        GameObject logoObject;
+
+        if (existingLogo != null)
+        {
+            logoObject = existingLogo.gameObject;
+        }
+        else
+        {
+            logoObject = new GameObject(logoObjectName, typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            logoObject.transform.SetParent(charNameDisplay.transform, false);
+        }
+
+        RectTransform logoRect = logoObject.GetComponent<RectTransform>();
+        logoRect.anchorMin = Vector2.zero;
+        logoRect.anchorMax = Vector2.one;
+        logoRect.anchoredPosition = Vector2.zero;
+        logoRect.sizeDelta = Vector2.zero;
+
+        Image logo = logoObject.GetComponent<Image>();
+
+        logo.sprite = gameLogoSprite;
+        logo.color = Color.white;
+        logo.preserveAspect = true;
+        logo.raycastTarget = false;
+        logo.enabled = true;
+    }
+
     public override void Exit(AState to)
     {
-        missionPopup.gameObject.SetActive(false);
+        if (missionPopup != null) missionPopup.gameObject.SetActive(false);
         inventoryCanvas.gameObject.SetActive(false);
 
         if (m_Character != null) Addressables.ReleaseInstance(m_Character);
@@ -171,51 +211,28 @@ public class LoadoutState : AState
             m_Character.transform.Rotate(0, k_CharacterRotationSpeed * Time.deltaTime, 0, Space.Self);
         }
 
-		charSelect.gameObject.SetActive(PlayerData.instance.characters.Count > 1);
-		themeSelect.gameObject.SetActive(PlayerData.instance.themes.Count > 1);
+		if (charSelect != null) charSelect.gameObject.SetActive(false);
+		if (themeSelect != null) themeSelect.gameObject.SetActive(false);
     }
 
 	public void GoToStore()
 	{
-        UnityEngine.SceneManagement.SceneManager.LoadScene(k_ShopSceneName, UnityEngine.SceneManagement.LoadSceneMode.Additive);
+        // Disabled for simple demo
 	}
 
     public void ChangeCharacter(int dir)
     {
-        PlayerData.instance.usedCharacter += dir;
-        if (PlayerData.instance.usedCharacter >= PlayerData.instance.characters.Count)
-            PlayerData.instance.usedCharacter = 0;
-        else if(PlayerData.instance.usedCharacter < 0)
-            PlayerData.instance.usedCharacter = PlayerData.instance.characters.Count-1;
-
-        StartCoroutine(PopulateCharacters());
+        // Disabled for simple demo
     }
 
     public void ChangeAccessory(int dir)
     {
-        m_UsedAccessory += dir;
-        if (m_UsedAccessory >= m_OwnedAccesories.Count)
-            m_UsedAccessory = -1;
-        else if (m_UsedAccessory < -1)
-            m_UsedAccessory = m_OwnedAccesories.Count-1;
-
-        if (m_UsedAccessory != -1)
-            PlayerData.instance.usedAccessory = m_OwnedAccesories[m_UsedAccessory];
-        else
-            PlayerData.instance.usedAccessory = -1;
-
-        SetupAccessory();
+        // Disabled for simple demo
     }
 
     public void ChangeTheme(int dir)
     {
-        PlayerData.instance.usedTheme += dir;
-        if (PlayerData.instance.usedTheme >= PlayerData.instance.themes.Count)
-            PlayerData.instance.usedTheme = 0;
-        else if (PlayerData.instance.usedTheme < 0)
-            PlayerData.instance.usedTheme = PlayerData.instance.themes.Count - 1;
-
-        StartCoroutine(PopulateTheme());
+        // Disabled for simple demo
     }
 
     public IEnumerator PopulateTheme()
@@ -228,16 +245,16 @@ public class LoadoutState : AState
             yield return null;
         }
 
-        themeNameDisplay.text = t.themeName;
-		themeIcon.sprite = t.themeIcon;
+        if (themeNameDisplay != null) themeNameDisplay.text = t.themeName;
+		if (themeIcon != null) themeIcon.sprite = t.themeIcon;
 
-		skyMeshFilter.sharedMesh = t.skyMesh;
-        UIGroundFilter.sharedMesh = t.UIGroundMesh;
+		if (skyMeshFilter != null) skyMeshFilter.sharedMesh = t.skyMesh;
+        if (UIGroundFilter != null) UIGroundFilter.sharedMesh = t.UIGroundMesh;
 	}
 
     public IEnumerator PopulateCharacters()
     {
-		accessoriesSelector.gameObject.SetActive(false);
+		if (accessoriesSelector != null) accessoriesSelector.gameObject.SetActive(false);
         PlayerData.instance.usedAccessory = -1;
         m_UsedAccessory = -1;
 
@@ -252,28 +269,12 @@ public class LoadoutState : AState
                 if (c != null)
                 {
                     m_OwnedAccesories.Clear();
-                    for (int i = 0; i < c.accessories.Length; ++i)
-                    {
-						// Check which accessories we own.
-                        string compoundName = c.characterName + ":" + c.accessories[i].accessoryName;
-                        if (PlayerData.instance.characterAccessories.Contains(compoundName))
-                        {
-                            m_OwnedAccesories.Add(i);
-                        }
-                    }
 
                     Vector3 pos = charPosition.transform.position;
-                    if (m_OwnedAccesories.Count > 0)
-                    {
-                        pos.x = k_OwnedAccessoriesCharacterOffset;
-                    }
-                    else
-                    {
-                        pos.x = 0.0f;
-                    }
+                    pos.x = 0.0f;
                     charPosition.transform.position = pos;
 
-                    accessoriesSelector.gameObject.SetActive(m_OwnedAccesories.Count > 0);
+                    if (accessoriesSelector != null) accessoriesSelector.gameObject.SetActive(false);
 
                     AsyncOperationHandle op = Addressables.InstantiateAsync(c.characterName);
                     yield return op;
@@ -291,7 +292,7 @@ public class LoadoutState : AState
                         Addressables.ReleaseInstance(m_Character);
 
                     m_Character = newChar;
-                    charNameDisplay.text = c.characterName;
+                    // The menu header is now the game logo, not the selected character name.
 
                     m_Character.transform.localPosition = Vector3.right * 1000;
                     //animator will take a frame to initialize, during which the character will be in a T-pose.
@@ -311,19 +312,19 @@ public class LoadoutState : AState
 
     void SetupAccessory()
     {
-        Character c = m_Character.GetComponent<Character>();
-        c.SetupAccesory(PlayerData.instance.usedAccessory);
+        Character c = m_Character != null ? m_Character.GetComponent<Character>() : null;
+        if (c != null)
+        {
+            c.SetupAccesory(PlayerData.instance.usedAccessory);
+        }
 
-        if (PlayerData.instance.usedAccessory == -1)
+        if (accesoryNameDisplay != null)
         {
             accesoryNameDisplay.text = "None";
-			accessoryIconDisplay.enabled = false;
-		}
-        else
+        }
+        if (accessoryIconDisplay != null)
         {
-			accessoryIconDisplay.enabled = true;
-			accesoryNameDisplay.text = c.accessories[PlayerData.instance.usedAccessory].accessoryName;
-			accessoryIconDisplay.sprite = c.accessories[PlayerData.instance.usedAccessory].accessoryIcon;
+            accessoryIconDisplay.enabled = false;
         }
     }
 
@@ -393,15 +394,7 @@ public class LoadoutState : AState
 
     public void StartGame()
     {
-        if (PlayerData.instance.tutorialDone)
-        {
-            if (PlayerData.instance.ftueLevel == 1)
-            {
-                PlayerData.instance.ftueLevel = 2;
-                PlayerData.instance.Save();
-            }
-        }
-
+        PlayerData.instance.tutorialDone = false;
         manager.SwitchState("Game");
     }
 

@@ -10,7 +10,8 @@ public class RestartRunning : StateMachineBehaviour
         if (animator.GetBool(s_DeadHash))
             return; 
         
-        TrackManager.instance.StartMove();
+        // Resume after a hit without resetting the current run speed.
+        TrackManager.instance.StartMove(false);
     }
 
 }

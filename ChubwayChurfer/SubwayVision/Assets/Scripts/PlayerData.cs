@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using System.IO;
 using System.Collections.Generic;
 #if UNITY_ANALYTICS
@@ -91,85 +91,49 @@ public class PlayerData
 
     public void AddCharacter(string name)
     {
-        characters.Add(name);
+        // Disabled for simple demo
     }
 
     public void AddTheme(string theme)
     {
-        themes.Add(theme);
+        // Disabled for simple demo
     }
 
     public void AddAccessory(string name)
     {
-        characterAccessories.Add(name);
+        // Disabled for simple demo
     }
 
     // Mission management
 
-    // Will add missions until we reach 2 missions.
     public void CheckMissionsCount()
     {
-        while (missions.Count < 2)
-            AddMission();
+        // Disabled for simple demo
     }
 
     public void AddMission()
     {
-        int val = Random.Range(0, (int)MissionBase.MissionType.MAX);
-        
-        MissionBase newMission = MissionBase.GetNewMissionFromType((MissionBase.MissionType)val);
-        newMission.Created();
-
-        missions.Add(newMission);
+        // Disabled for simple demo
     }
 
     public void StartRunMissions(TrackManager manager)
     {
-        for(int i = 0; i < missions.Count; ++i)
-        {
-            missions[i].RunStart(manager);
-        }
+        // Disabled for simple demo
     }
 
     public void UpdateMissions(TrackManager manager)
     {
-        for(int i = 0; i < missions.Count; ++i)
-        {
-            missions[i].Update(manager);
-        }
+        // Disabled for simple demo
     }
 
     public bool AnyMissionComplete()
     {
-        for (int i = 0; i < missions.Count; ++i)
-        {
-            if (missions[i].isComplete) return true;
-        }
-
         return false;
     }
 
     public void ClaimMission(MissionBase mission)
-    {        
-        premium += mission.reward;
-        
-#if UNITY_ANALYTICS // Using Analytics Standard Events v0.3.0
-        AnalyticsEvent.ItemAcquired(
-            AcquisitionType.Premium, // Currency type
-            "mission",               // Context
-            mission.reward,          // Amount
-            "anchovies",             // Item ID
-            premium,                 // Item balance
-            "consumable",            // Item type
-            rank.ToString()          // Level
-        );
-#endif
-        
-        missions.Remove(mission);
-
-        CheckMissionsCount();
-
-        Save();
+    {
+        // Disabled for simple demo
     }
 
 	// High Score management
@@ -385,6 +349,21 @@ public class PlayerData
         }
 
         r.Close();
+
+        // Enforce demo defaults (base character, base theme, no accessories, no missions, tutorial enabled)
+        characters.Clear();
+        characters.Add("Trash Cat");
+        usedCharacter = 0;
+
+        characterAccessories.Clear();
+        usedAccessory = -1;
+
+        themes.Clear();
+        themes.Add("Day");
+        usedTheme = 0;
+
+        missions.Clear();
+        tutorialDone = false;
     }
 
     public void Save()
