@@ -12,23 +12,48 @@
 // L'affichage se fait dans une fenetre Win32 native, dessinee avec GDI
 // (StretchDIBits) -- aucune dependance externe type OpenCV.
 //
+// NOUVEAU : le programme se connecte en TCP (127.0.0.1:5000, non
+// bloquant, avec reconnexion automatique) a un serveur Python (pynput)
+// qui traduit des commandes texte ("haut", "bas", "gauche", "droite"...)
+// en appuis clavier reels. On n'envoie PAS l'etat absolu (zone/posture)
+// mais uniquement le mouvement correspondant a la TRANSITION d'etat :
+//   - gauche -> milieu ou milieu -> droite  => "droite"
+//   - droite -> milieu ou milieu -> gauche  => "gauche"
+//   - (peu importe l'etat de depart) -> saut     => "haut"
+//   - (peu importe l'etat de depart) -> accroupi => "bas"
+//   - -> debout : rien n'est envoye (position neutre = pas d'action)
+//
 // Setup du projet Visual Studio :
 //   - Includes : $(KINECTSDK10_DIR)inc
 //   - Lib dirs : $(KINECTSDK10_DIR)lib\x86  (ou \x64 selon la config)
 //   - Linker > Input > Additional Dependencies :
-//         Kinect10.lib Gdi32.lib User32.lib
+//         Kinect10.lib Gdi32.lib User32.lib Ws2_32.lib
 //   ($(KINECTSDK10_DIR) est une variable d'environnement definie
 //    automatiquement par l'installeur du SDK)
 //
 // Compilation en ligne de commande (cl.exe) :
 //   cl /EHsc kinect_v1_skeleton_leftright.cpp /I "%KINECTSDK10_DIR%inc" ^
 //      /link /LIBPATH:"%KINECTSDK10_DIR%lib\x86" ^
-//      Kinect10.lib Gdi32.lib User32.lib
+//      Kinect10.lib Gdi32.lib User32.lib Ws2_32.lib
+//
+// Cote Python, lancer le serveur AVANT (ou apres, peu importe grace a la
+// reconnexion automatique) le programme C++ :
+//   python kinect_keyboard_server.py
 
+// IMPORTANT : winsock2.h doit etre inclus avant windows.h (ou
+// WIN32_LEAN_AND_MEAN doit etre defini avant) pour eviter les conflits
+// avec l'ancien winsock.h inclus automatiquement par windows.h.
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
+#include <unknwn.h> 
 #include <NuiApi.h>
 #include <iostream>
+#include <string>
 #include <vector>
+
+#pragma comment(lib, "Ws2_32.lib")
 
 static HANDLE      g_hNextSkeletonEvent = NULL;
 static INuiSensor* g_pNuiSensor         = NULL;
@@ -46,7 +71,10 @@ static const float ZONE_LEFT_LIMIT  = -0.2f; // en dessous -> GAUCHE
 static const float ZONE_RIGHT_LIMIT =  0.2f; // au dessus  -> DROITE
                                               // entre les deux -> MILIEU
 
-enum class Zone { GAUCHE, MILIEU, DROITE };
+// L'ordre des valeurs compte : il est utilise pour calculer le nombre
+// et le sens des mouvements clavier lors d'un changement de zone (voir
+// SendZoneMovement plus bas). GAUCHE < MILIEU < DROITE.
+enum class Zone { GAUCHE = 0, MILIEU = 1, DROITE = 2 };
 
 static Zone GetZoneFromX(float x)
 {
@@ -78,7 +106,7 @@ static const char* ZoneToString(Zone z)
 enum class Posture { ACCROUPI, DEBOUT, SAUT };
 
 // Seuils de declenchement, en metres, par rapport a la reference.
-static const float JUMP_Y_THRESHOLD    =  0.12f; // au-dessus -> SAUT
+static const float JUMP_Y_THRESHOLD    =  0.06f; // au-dessus -> SAUT
 static const float CROUCH_Y_THRESHOLD  = -0.15f; // en dessous -> ACCROUPI
 
 // Nombre de frames utilisees pour etablir la position de reference au
@@ -133,6 +161,183 @@ static void ResetYCalibration()
     g_hasBaselineY       = false;
     g_calibrationSamples = 0;
     g_calibrationSum     = 0.0f;
+}
+
+// --- Communication reseau avec le serveur clavier (Python) --------------
+//
+// Le script Python (pynput) ecoute en TCP sur 127.0.0.1:5000 et attend
+// des commandes texte terminees par '\n' (ex: "gauche\n", "haut\n").
+// Chaque commande recue declenche une pression + relachement de la
+// touche clavier correspondante (voir le dictionnaire KEYS du script).
+//
+// La connexion est geree en mode NON BLOQUANT : si le serveur Python
+// n'est pas encore lance, ou se ferme/plante en cours de route, la
+// boucle principale (lecture Kinect + fenetre video) n'est jamais
+// stoppee. Une tentative de reconnexion est retentee automatiquement
+// toutes les NETWORK_RETRY_MS millisecondes.
+
+static const char*   NETWORK_HOST     = "127.0.0.1";
+static const u_short  NETWORK_PORT     = 5000;
+static const DWORD   NETWORK_RETRY_MS = 3000;
+
+static SOCKET g_keyboardSocket      = INVALID_SOCKET;
+static bool   g_networkConnected    = false;
+static DWORD  g_lastConnectAttempt  = 0;
+
+static bool InitWinsock()
+{
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+    {
+        std::cerr << "WSAStartup a echoue.\n";
+        return false;
+    }
+    return true;
+}
+
+// Lance (ou relance) une connexion non bloquante vers le serveur Python.
+// Ne bloque jamais : connect() retourne immediatement sur un socket non
+// bloquant, et la reussite/echec reel est verifie plus tard par
+// PollKeyboardConnection() via select().
+static void TryConnectKeyboardServer()
+{
+    DWORD now = GetTickCount();
+    if (g_lastConnectAttempt != 0 && (now - g_lastConnectAttempt) < NETWORK_RETRY_MS)
+        return; // trop tot pour retenter
+
+    g_lastConnectAttempt = now;
+
+    if (g_keyboardSocket != INVALID_SOCKET)
+    {
+        closesocket(g_keyboardSocket);
+        g_keyboardSocket = INVALID_SOCKET;
+    }
+
+    g_keyboardSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (g_keyboardSocket == INVALID_SOCKET)
+        return;
+
+    u_long nonBlocking = 1;
+    ioctlsocket(g_keyboardSocket, FIONBIO, &nonBlocking);
+
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(NETWORK_PORT);
+    inet_pton(AF_INET, NETWORK_HOST, &addr.sin_addr);
+
+    connect(g_keyboardSocket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    // Resultat reel ignore ici : verifie par PollKeyboardConnection().
+}
+
+// A appeler a chaque tour de boucle principale. Si une connexion est en
+// cours d'etablissement, verifie si elle vient d'aboutir (socket devenu
+// inscriptible = connecte) ou a echoue. Si on est deconnecte depuis
+// assez longtemps, relance une tentative.
+static void PollKeyboardConnection()
+{
+    if (g_networkConnected)
+        return;
+
+    if (g_keyboardSocket == INVALID_SOCKET)
+    {
+        TryConnectKeyboardServer();
+        return;
+    }
+
+    fd_set writeSet;
+    FD_ZERO(&writeSet);
+    FD_SET(g_keyboardSocket, &writeSet);
+
+    fd_set errorSet;
+    FD_ZERO(&errorSet);
+    FD_SET(g_keyboardSocket, &errorSet);
+
+    TIMEVAL timeout = {0, 0}; // interrogation instantanee, jamais bloquant
+    int result = select(0, NULL, &writeSet, &errorSet, &timeout);
+
+    if (result > 0)
+    {
+        if (FD_ISSET(g_keyboardSocket, &errorSet))
+        {
+            closesocket(g_keyboardSocket);
+            g_keyboardSocket = INVALID_SOCKET;
+        }
+        else if (FD_ISSET(g_keyboardSocket, &writeSet))
+        {
+            g_networkConnected = true;
+            std::cout << "Connecte au serveur clavier (" << NETWORK_HOST
+                       << ":" << NETWORK_PORT << ")\n";
+        }
+    }
+    else
+    {
+        // Toujours en cours de connexion : on retentera au prochain
+        // depassement de NETWORK_RETRY_MS si necessaire.
+        TryConnectKeyboardServer();
+    }
+}
+
+// Envoie une commande texte (ex: "haut", "gauche"...) au serveur Python.
+// Ne fait rien si pas connecte. En cas d'echec d'envoi (serveur ferme
+// la connexion), on repasse en mode "deconnecte" pour retenter plus
+// tard via PollKeyboardConnection().
+static void SendKeyCommand(const char* command)
+{
+    if (!g_networkConnected || g_keyboardSocket == INVALID_SOCKET)
+        return;
+
+    std::string line = std::string(command) + "\n";
+    int sent = send(g_keyboardSocket, line.c_str(), static_cast<int>(line.size()), 0);
+
+    if (sent == SOCKET_ERROR)
+    {
+        int err = WSAGetLastError();
+        if (err != WSAEWOULDBLOCK)
+        {
+            std::cerr << "Connexion au serveur clavier perdue, "
+                         "nouvelle tentative dans " << NETWORK_RETRY_MS << " ms\n";
+            closesocket(g_keyboardSocket);
+            g_keyboardSocket   = INVALID_SOCKET;
+            g_networkConnected = false;
+        }
+    }
+}
+
+// Convertit un CHANGEMENT de zone en mouvement clavier gauche/droite.
+// On ne connait/envoie jamais la zone absolue : seulement le sens du
+// deplacement relatif, en fonction de l'ordre GAUCHE(0) < MILIEU(1) <
+// DROITE(2). Ex : GAUCHE -> MILIEU ou MILIEU -> DROITE => "droite" ;
+// DROITE -> MILIEU ou MILIEU -> GAUCHE => "gauche". Si jamais deux
+// frames sautent une zone (GAUCHE -> DROITE directement), on envoie le
+// mouvement plusieurs fois pour rattraper l'ecart.
+static void SendZoneMovement(Zone from, Zone to)
+{
+    int diff = static_cast<int>(to) - static_cast<int>(from);
+
+    while (diff > 0) { SendKeyCommand("droite"); --diff; }
+    while (diff < 0) { SendKeyCommand("gauche"); ++diff; }
+}
+
+// Pour la posture, seuls SAUT et ACCROUPI declenchent un appui clavier.
+// Revenir a DEBOUT ne fait rien : c'est la position neutre, "rien n'a
+// besoin d'etre fait" comme demande.
+static void SendPostureCommand(Posture p)
+{
+    switch (p)
+    {
+        case Posture::SAUT:     SendKeyCommand("haut"); break;
+        case Posture::ACCROUPI: SendKeyCommand("bas");  break;
+        case Posture::DEBOUT:
+        default:
+            break; // neutre : aucune commande envoyee
+    }
+}
+
+static void CleanupNetwork()
+{
+    if (g_keyboardSocket != INVALID_SOCKET)
+        closesocket(g_keyboardSocket);
+    WSACleanup();
 }
 
 // --- Flux video couleur (fenetre Win32 + GDI natif) ---------------------
@@ -382,10 +587,12 @@ bool InitKinect()
 // joueur verrouille sort du champ, le verrou est relache et le
 // prochain squelette tracke prend sa place.
 //
-// Pour chaque frame du joueur verrouille, affiche (sur changement) :
-//   - la zone gauche/milieu/droite (axe X)
-//   - la posture debout/saut/accroupi (axe Y, relative a une reference
-//     calibree automatiquement juste apres le verrouillage)
+// Pour chaque frame du joueur verrouille :
+//   - calcule la zone gauche/milieu/droite (axe X) et la posture
+//     debout/saut/accroupi (axe Y, relative a la reference calibree)
+//   - sur CHANGEMENT d'etat, envoie la commande clavier correspondant
+//     a la transition (voir SendZoneMovement / SendPostureCommand)
+//   - affiche l'etat courant dans la console (sur changement)
 void ProcessSkeletonFrame()
 {
     NUI_SKELETON_FRAME skeletonFrame = {0};
@@ -492,6 +699,16 @@ void ProcessSkeletonFrame()
                    << ", ref = " << g_baselineHipY << ")\n";
     }
 
+    // --- Envoi des commandes clavier bases sur la TRANSITION d'etat ---
+    // On ne memorise/compare que l'etat precedent vs l'etat recu : on
+    // n'envoie jamais un etat absolu, seulement le mouvement qui permet
+    // de passer de l'un a l'autre.
+    if (hasLastZone && currentZone != lastZone)
+        SendZoneMovement(lastZone, currentZone);
+
+    if (!hasLastPosture || currentPosture != lastPosture)
+        SendPostureCommand(currentPosture); // no-op automatique si DEBOUT
+
     // N'affiche que lors d'un changement de zone ou de posture pour ne
     // pas spammer la console ; retire ces conditions si tu veux l'etat
     // a chaque frame.
@@ -513,8 +730,19 @@ void ProcessSkeletonFrame()
 
 int main()
 {
-    if (!InitKinect())
+    if (!InitWinsock())
         return 1;
+
+    if (!InitKinect())
+    {
+        WSACleanup();
+        return 1;
+    }
+
+    // Premiere tentative de connexion au serveur clavier Python ; si le
+    // serveur n'est pas encore lance, PollKeyboardConnection() retentera
+    // automatiquement dans la boucle principale.
+    TryConnectKeyboardServer();
 
     std::cout << "Kinect initialisee, en attente de squelette... "
                  "(Ctrl+C pour quitter, V pour activer/desactiver la video)\n";
@@ -537,8 +765,10 @@ int main()
 
         ProcessVideoFrame();
         PumpVideoWindowMessages();
+        PollKeyboardConnection();
     }
 
     g_pNuiSensor->NuiShutdown();
+    CleanupNetwork();
     return 0;
 }
