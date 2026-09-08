@@ -304,23 +304,22 @@ public class LoadoutState : AState
         if (m_HoldInstructionText != null)
         {
             // Progress shown as filling dots (one per second held), separate from the actual
-            // hold duration: all dots fill by dotsToShow seconds, then hold full/green for the
+            // hold duration: all dots fill by dotsToShow seconds, then hold full for the
             // remaining time as a short pause before the run actually starts.
+            // Fixed colors, no gradient: "-" stays plain white, "*" is plain green.
             int totalDots = Mathf.Max(1, dotsToShow);
-            float ratio = Mathf.Clamp01(m_HoldTimer / totalDots);
-            string timerColor = ColorUtility.ToHtmlStringRGB(Color.Lerp(Color.white, Color.green, ratio));
-
             int filledDots = Mathf.Clamp(Mathf.FloorToInt(m_HoldTimer + 0.001f), 0, totalDots);
             System.Text.StringBuilder dots = new System.Text.StringBuilder();
             for (int i = 0; i < totalDots; i++)
             {
-                dots.Append(i < filledDots ? "*" : "-"); // ASCII only: the game font may not have ●/○ glyphs
+                // ASCII only: the game font may not have ●/○ glyphs
+                dots.Append(i < filledDots ? "<color=#00FF00>*</color>" : "-");
                 if (i < totalDots - 1) dots.Append(' ');
             }
 
             m_HoldInstructionText.text = string.Format(
-                "PLACE-TOI SUR LA CROIX POUR JOUER\n<color=#{0}>{1}</color>",
-                timerColor, dots.ToString());
+                "PLACE-TOI SUR LA CROIX POUR JOUER\n{0}",
+                dots.ToString());
         }
 
         if (m_HoldTimer >= holdDurationToStart)
