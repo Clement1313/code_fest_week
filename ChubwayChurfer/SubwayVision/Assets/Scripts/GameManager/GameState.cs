@@ -422,10 +422,9 @@ public class GameState : AState
         yield return new WaitForSeconds(2.0f);
         if (currentModifier.OnRunEnd(this))
         {
-            if (trackManager.isRerun)
-                manager.SwitchState("GameOver");
-            else
-                OpenGameOverPopup();
+            // No revive popup (no mouse to click "get another chance" with once Kinect
+            // drives the game): go straight to the Game Over screen every time.
+            manager.SwitchState("GameOver");
         }
 	}
 

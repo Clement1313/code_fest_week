@@ -462,10 +462,10 @@ public class PlayerDataEditor : Editor
     [MenuItem("Trash Dash Debug/Give 10 Consumables of each types")]
     static public void AddConsumables()
     {
-       
-        for(int i = 0; i < ShopItemList.s_ConsumablesTypes.Length; ++i)
+        Consumable.ConsumableType[] consumableTypes = System.Enum.GetValues(typeof(Consumable.ConsumableType)) as Consumable.ConsumableType[];
+        for(int i = 0; i < consumableTypes.Length; ++i)
         {
-            Consumable c = ConsumableDatabase.GetConsumbale(ShopItemList.s_ConsumablesTypes[i]);
+            Consumable c = ConsumableDatabase.GetConsumbale(consumableTypes[i]);
             if(c != null)
             {
                 PlayerData.instance.consumables[c.GetConsumableType()] = 10;

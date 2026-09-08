@@ -4,6 +4,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine.AddressableAssets;
 using UnityEngine.ResourceManagement.AsyncOperations;
+using UnityEngine.SceneManagement;
 
 #if UNITY_ANALYTICS
 using UnityEngine.Analytics;
@@ -67,10 +68,26 @@ public class LoadoutState : AState
 	protected Modifier m_CurrentModifier = new Modifier();
 
     protected const float k_CharacterRotationSpeed = 45f;
-    protected const string k_ShopSceneName = "shop";
     protected const float k_OwnedAccessoriesCharacterOffset = -0.1f;
     protected int k_UILayer;
     protected readonly Quaternion k_FlippedYAxisRotation = Quaternion.Euler (0f, 180f, 0f);
+
+    [Header("Ready Screen (Hold to start)")]
+    [Tooltip("Keyboard key used to simulate the 'crouch' gesture while debugging without the Kinect.")]
+    public KeyCode debugStartKey = KeyCode.S;
+    [Tooltip("Total hold time before the run actually starts.")]
+    public float holdDurationToStart = 4f;
+    [Tooltip("Number of dots shown filling up. The last dot fills before holdDurationToStart is reached, then holds for the remaining time as a short pause before the run starts.")]
+    public int dotsToShow = 3;
+
+    protected const string k_GameTitle = "ChubwayChurfer";
+    protected const string k_FallbackStartSceneName = "start";
+
+    protected bool m_ReadyScreenBuilt;
+    protected bool m_ReadyToStart;
+    protected float m_HoldTimer;
+    protected Text m_HoldInstructionText;
+    protected Button m_DebugFallbackButton;
 
     public override void Enter(AState from)
     {
@@ -82,6 +99,29 @@ public class LoadoutState : AState
 
         SetupGameLogo();
         if (themeNameDisplay != null) themeNameDisplay.text = "";
+
+        SetupReadyScreenUI();
+        m_ReadyToStart = false;
+        m_HoldTimer = 0f;
+
+        if (leaderboard != null)
+        {
+            leaderboard.displayPlayer = false;
+            leaderboard.forcePlayerDisplay = false;
+            leaderboard.Open();
+
+            // The leaderboard now stays open permanently as a plain side panel (no mouse to
+            // click anything with anyway once Kinect drives the game): hide its close button...
+            Transform closeButtons = leaderboard.transform.Find("Background/Buttons");
+            if (closeButtons != null) closeButtons.gameObject.SetActive(false);
+
+            // ...and the separate "open leaderboard" button elsewhere on the screen, now
+            // redundant since the leaderboard is always visible.
+            GameObject openLeaderboardButton = GameObject.Find("OpenLeaderboard");
+            if (openLeaderboardButton != null) openLeaderboardButton.SetActive(false);
+
+            StyleLeaderboardText();
+        }
 
         k_UILayer = LayerMask.NameToLayer("UI");
 
@@ -97,8 +137,8 @@ public class LoadoutState : AState
             StartCoroutine(MusicPlayer.instance.RestartAllStems());
         }
 
-        runButton.interactable = false;
-        runButton.GetComponentInChildren<Text>().text = "Loading...";
+        runButton.gameObject.SetActive(false);
+        if (m_HoldInstructionText != null) m_HoldInstructionText.gameObject.SetActive(false);
 
         if(m_PowerupToUse != Consumable.ConsumableType.NONE)
         {
@@ -112,47 +152,192 @@ public class LoadoutState : AState
 
     void SetupGameLogo()
     {
-        if (charNameDisplay == null || gameLogoSprite == null)
+        if (charNameDisplay == null)
             return;
 
         // The character name used to be written here (for example "Trash Cat").
-        // Keep the same well-positioned UI object, but render the game logo instead.
-        charNameDisplay.text = "";
-        charNameDisplay.enabled = false;
+        // We now show the game title instead.
+        charNameDisplay.text = k_GameTitle;
+        charNameDisplay.enabled = true;
 
-        const string logoObjectName = "GameLogo";
-        Transform existingLogo = charNameDisplay.transform.Find(logoObjectName);
-        GameObject logoObject;
+        // Pin the title to a full-width band at the very top of the screen, so it never
+        // overlaps the leaderboard side panel regardless of its original scene position.
+        RectTransform titleRect = charNameDisplay.rectTransform;
+        titleRect.anchorMin = new Vector2(0f, 0.88f);
+        titleRect.anchorMax = new Vector2(1f, 1f);
+        titleRect.pivot = new Vector2(0.5f, 0.5f);
+        titleRect.anchoredPosition = Vector2.zero;
+        titleRect.sizeDelta = Vector2.zero;
+    }
 
-        if (existingLogo != null)
+    /// <summary>
+    /// Builds (once) the elements of the new "ready" screen: the lane legend, the
+    /// hold-to-start instruction label, and a near-invisible fallback button (bottom-right
+    /// corner) that escapes to the old mouse-driven Start scene if the gesture/key never
+    /// registers (Kinect issue, etc.).
+    /// </summary>
+    void SetupReadyScreenUI()
+    {
+        if (m_ReadyScreenBuilt)
+            return;
+        m_ReadyScreenBuilt = true;
+
+        if (charNameDisplay != null)
         {
-            logoObject = existingLogo.gameObject;
+            // Hold-to-start instruction/progress label, shown once loading is done.
+            m_HoldInstructionText = Instantiate(charNameDisplay, inventoryCanvas.transform, false);
+            m_HoldInstructionText.name = "HoldToStartLabel";
+            m_HoldInstructionText.enabled = true;
+            m_HoldInstructionText.fontSize = Mathf.Max(48, charNameDisplay.fontSize);
+            m_HoldInstructionText.alignment = TextAnchor.MiddleCenter;
+            m_HoldInstructionText.supportRichText = true;
+            m_HoldInstructionText.color = Color.white;
+            m_HoldInstructionText.horizontalOverflow = HorizontalWrapMode.Overflow;
+            m_HoldInstructionText.verticalOverflow = VerticalWrapMode.Overflow;
+            m_HoldInstructionText.text = "";
+            m_HoldInstructionText.gameObject.SetActive(false);
+
+            // Centered on screen, a bit below the middle.
+            RectTransform holdRect = m_HoldInstructionText.rectTransform;
+            holdRect.anchorMin = new Vector2(0.5f, 0.5f);
+            holdRect.anchorMax = new Vector2(0.5f, 0.5f);
+            holdRect.pivot = new Vector2(0.5f, 0.5f);
+            holdRect.anchoredPosition = new Vector2(0f, -120f);
+            holdRect.sizeDelta = new Vector2(1600f, 260f);
+        }
+
+        // Near-invisible fallback button, cloned from the run button so it inherits valid
+        // Button/Image/Text references. Kept tiny and almost transparent in a corner.
+        if (runButton != null)
+        {
+            m_DebugFallbackButton = Instantiate(runButton, inventoryCanvas.transform, false);
+            m_DebugFallbackButton.name = "DebugFallbackButton";
+            m_DebugFallbackButton.gameObject.SetActive(true);
+            m_DebugFallbackButton.interactable = true;
+
+            m_DebugFallbackButton.onClick.RemoveAllListeners();
+            m_DebugFallbackButton.onClick.AddListener(GoToFallbackStartScene);
+
+            Text fallbackLabel = m_DebugFallbackButton.GetComponentInChildren<Text>();
+            if (fallbackLabel != null) fallbackLabel.text = "";
+
+            Image fallbackImage = m_DebugFallbackButton.GetComponent<Image>();
+            if (fallbackImage != null) fallbackImage.color = new Color(1f, 1f, 1f, 0.02f);
+
+            RectTransform fallbackRect = m_DebugFallbackButton.GetComponent<RectTransform>();
+            fallbackRect.anchorMin = new Vector2(1f, 0f);
+            fallbackRect.anchorMax = new Vector2(1f, 0f);
+            fallbackRect.pivot = new Vector2(1f, 0f);
+            fallbackRect.anchoredPosition = new Vector2(-10f, 10f);
+            fallbackRect.sizeDelta = new Vector2(70f, 70f);
+        }
+    }
+
+    /// <summary>
+    /// Escape hatch to the old mouse-driven Start scene, reachable only through the
+    /// hidden corner button, in case the hold-to-start gesture/key never registers.
+    /// </summary>
+    void GoToFallbackStartScene()
+    {
+        SceneManager.LoadScene(k_FallbackStartSceneName);
+    }
+
+    /// <summary>
+    /// Now that the leaderboard has no background panel behind it, its text needs a strong
+    /// color + outline to stay readable over the 3D scene, and the score column needs to
+    /// stand out more than the rank/name columns.
+    /// </summary>
+    void StyleLeaderboardText()
+    {
+        if (leaderboard == null || leaderboard.entriesRoot == null)
+            return;
+
+        Color textColor = Color.white;
+        Color scoreColor = new Color(1f, 0.82f, 0.15f); // gold
+
+        Text title = leaderboard.transform.Find("Background/Text")?.GetComponent<Text>();
+        StyleText(title, textColor, false);
+
+        for (int i = 0; i < leaderboard.entriesRoot.childCount; i++)
+        {
+            HighscoreUI hs = leaderboard.entriesRoot.GetChild(i).GetComponent<HighscoreUI>();
+            if (hs == null)
+                continue;
+
+            StyleText(hs.number, textColor, false);
+            StyleText(hs.playerName, textColor, false);
+            StyleText(hs.inputName != null ? hs.inputName.textComponent : null, textColor, false);
+            StyleText(hs.score, scoreColor, true);
+        }
+    }
+
+    void StyleText(Text text, Color color, bool bold)
+    {
+        if (text == null)
+            return;
+
+        text.color = color;
+        text.fontStyle = bold ? FontStyle.Bold : FontStyle.Normal;
+
+        Outline outline = text.GetComponent<Outline>();
+        if (outline == null) outline = text.gameObject.AddComponent<Outline>();
+        outline.effectColor = new Color(0f, 0f, 0f, 0.85f);
+        outline.effectDistance = new Vector2(1.5f, -1.5f);
+    }
+
+    /// <summary>
+    /// Tracks how long debugStartKey (S) has been held. Reaching holdDurationToStart
+    /// seconds of continuous hold starts the run. This key is a keyboard stand-in for the
+    /// real gesture (crouching in front of the Kinect) used once body tracking is wired in.
+    /// </summary>
+    void UpdateHoldToStart()
+    {
+        if (Input.GetKey(debugStartKey))
+        {
+            m_HoldTimer += Time.deltaTime;
         }
         else
         {
-            logoObject = new GameObject(logoObjectName, typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
-            logoObject.transform.SetParent(charNameDisplay.transform, false);
+            m_HoldTimer = 0f;
         }
 
-        RectTransform logoRect = logoObject.GetComponent<RectTransform>();
-        logoRect.anchorMin = Vector2.zero;
-        logoRect.anchorMax = Vector2.one;
-        logoRect.anchoredPosition = Vector2.zero;
-        logoRect.sizeDelta = Vector2.zero;
+        if (m_HoldInstructionText != null)
+        {
+            // Progress shown as filling dots (one per second held), separate from the actual
+            // hold duration: all dots fill by dotsToShow seconds, then hold full/green for the
+            // remaining time as a short pause before the run actually starts.
+            int totalDots = Mathf.Max(1, dotsToShow);
+            float ratio = Mathf.Clamp01(m_HoldTimer / totalDots);
+            string timerColor = ColorUtility.ToHtmlStringRGB(Color.Lerp(Color.white, Color.green, ratio));
 
-        Image logo = logoObject.GetComponent<Image>();
+            int filledDots = Mathf.Clamp(Mathf.FloorToInt(m_HoldTimer + 0.001f), 0, totalDots);
+            System.Text.StringBuilder dots = new System.Text.StringBuilder();
+            for (int i = 0; i < totalDots; i++)
+            {
+                dots.Append(i < filledDots ? "*" : "-"); // ASCII only: the game font may not have ●/○ glyphs
+                if (i < totalDots - 1) dots.Append(' ');
+            }
 
-        logo.sprite = gameLogoSprite;
-        logo.color = Color.white;
-        logo.preserveAspect = true;
-        logo.raycastTarget = false;
-        logo.enabled = true;
+            m_HoldInstructionText.text = string.Format(
+                "PLACE-TOI SUR LA CROIX POUR JOUER\n<color=#{0}>{1}</color>",
+                timerColor, dots.ToString());
+        }
+
+        if (m_HoldTimer >= holdDurationToStart)
+        {
+            m_HoldTimer = 0f;
+            StartGame();
+        }
     }
 
     public override void Exit(AState to)
     {
         if (missionPopup != null) missionPopup.gameObject.SetActive(false);
         inventoryCanvas.gameObject.SetActive(false);
+
+        // The leaderboard has its own independent Canvas (not under inventoryCanvas), so it
+        // must be closed explicitly or it would stay visible on top of the run itself.
+        if (leaderboard != null) leaderboard.Close();
 
         if (m_Character != null) Addressables.ReleaseInstance(m_Character);
 
@@ -193,17 +378,22 @@ public class LoadoutState : AState
 
     public override void Tick()
     {
-        if (!runButton.interactable)
+        if (!m_ReadyToStart)
         {
-            bool interactable = ThemeDatabase.loaded && CharacterDatabase.loaded;
-            if(interactable)
+            m_ReadyToStart = ThemeDatabase.loaded && CharacterDatabase.loaded;
+            if (m_ReadyToStart)
             {
-                runButton.interactable = true;
-                runButton.GetComponentInChildren<Text>().text = "Run!";
-
                 //we can always enabled, as the parent will be disabled if tutorial is already done
                 tutorialPrompt.SetActive(true);
+
+                if (m_HoldInstructionText != null)
+                    m_HoldInstructionText.gameObject.SetActive(true);
             }
+        }
+
+        if (m_ReadyToStart)
+        {
+            UpdateHoldToStart();
         }
 
         if(m_Character != null)

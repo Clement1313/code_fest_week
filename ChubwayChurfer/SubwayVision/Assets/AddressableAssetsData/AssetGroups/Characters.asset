@@ -26,10 +26,6 @@ MonoBehaviour:
     m_ReadOnly: 0
     m_SerializedLabels:
     - characters
-  - m_GUID: 2bfa18892388236498842bbfe7a3ff83
-    m_Address: Assets/Prefabs/UI/Header.prefab
-    m_ReadOnly: 0
-    m_SerializedLabels: []
   - m_GUID: 473ffa016efe3724cad08daa78e3d12a
     m_Address: Rubbish Raccoon
     m_ReadOnly: 0
@@ -45,10 +41,6 @@ MonoBehaviour:
     m_SerializedLabels: []
   - m_GUID: a53fe2875371488408daf0df7d69a981
     m_Address: Assets/Prefabs/UI/MissionPopup.prefab
-    m_ReadOnly: 0
-    m_SerializedLabels: []
-  - m_GUID: abafe3707f9235b4ab7cdfd1333295c3
-    m_Address: Assets/Prefabs/UI/ItemEntry.prefab
     m_ReadOnly: 0
     m_SerializedLabels: []
   - m_GUID: ac361d43768a861498da8046b83b94f5
