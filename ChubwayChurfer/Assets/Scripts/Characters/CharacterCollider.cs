@@ -107,20 +107,21 @@ public class CharacterCollider : MonoBehaviour
 			if (magnetCoins.Contains(c.gameObject))
 				magnetCoins.Remove(c.gameObject);
 
-			if (c.GetComponent<Coin>().isPremium)
+			Coin collectedFish = c.GetComponent<Coin>();
+			if (collectedFish.isPremium)
             {
 				Addressables.ReleaseInstance(c.gameObject);
-                PlayerData.instance.premium += 1;
-                controller.premium += 1;
-				m_Audio.PlayOneShot(premiumSound);
 			}
             else
             {
 				Coin.coinPool.Free(c.gameObject);
-                PlayerData.instance.coins += 1;
+				// Keep the run counter for fish-related missions, but fish are no longer currency.
 				controller.coins += 1;
-				m_Audio.PlayOneShot(coinSound);
             }
+
+			// Every fish is worth one point, processed through the active score multiplier.
+			controller.trackManager.AddScore(1, true);
+			m_Audio.PlayOneShot(coinSound);
         }
         else if(c.gameObject.layer == k_ObstacleLayerIndex)
         {

@@ -190,6 +190,10 @@ public class PlayerData
 			NewSave();
         }
 
+        // Upgrade scores created before automatic iconic-cat names were introduced.
+        if (CultCatNameGenerator.ReplaceLegacyNames(m_Instance))
+            m_Instance.Save();
+
         m_Instance.CheckMissionsCount();
     }
 

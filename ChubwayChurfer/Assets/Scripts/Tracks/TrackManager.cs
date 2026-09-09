@@ -97,8 +97,6 @@ public class TrackManager : MonoBehaviour
     protected float m_Speed;
 
     protected float m_TimeSincePowerup;     // The higher it goes, the higher the chance of spawning one
-    protected float m_TimeSinceLastPremium;
-
     protected int m_Multiplier;
 
     protected List<TrackSegment> m_Segments = new List<TrackSegment>();
@@ -477,7 +475,6 @@ public class TrackManager : MonoBehaviour
     public void PowerupSpawnUpdate()
     {
         m_TimeSincePowerup += Time.deltaTime;
-        m_TimeSinceLastPremium += Time.deltaTime;
     }
 
     public void ChangeZone()
@@ -595,8 +592,6 @@ public class TrackManager : MonoBehaviour
             int currentLane = Random.Range(0, 3);
 
             float powerupChance = Mathf.Clamp01(Mathf.Floor(m_TimeSincePowerup) * 0.5f * 0.001f);
-            float premiumChance = Mathf.Clamp01(Mathf.Floor(m_TimeSinceLastPremium) * 0.5f * 0.0001f);
-
             while (currentWorldPos < segment.worldLength)
             {
                 Vector3 pos;
@@ -647,21 +642,6 @@ public class TrackManager : MonoBehaviour
                             toUse.transform.SetParent(segment.transform, true);
                         }
                     }
-                    else if (Random.value < premiumChance)
-                    {
-                        m_TimeSinceLastPremium = 0.0f;
-                        premiumChance = 0.0f;
-
-                        AsyncOperationHandle op = Addressables.InstantiateAsync(currentTheme.premiumCollectible.name, pos, rot);
-                        yield return op;
-                        if (op.Result == null || !(op.Result is GameObject))
-                        {
-                            Debug.LogWarning(string.Format("Unable to load collectable {0}.", currentTheme.premiumCollectible.name));
-                            yield break;
-                        }
-                        toUse = op.Result as GameObject;
-                        toUse.transform.SetParent(segment.transform, true);
-                    }
                     else
                     {
                         toUse = Coin.coinPool.Get(pos, rot);
@@ -682,9 +662,9 @@ public class TrackManager : MonoBehaviour
         }
     }
 
-    public void AddScore(int amount)
+    public void AddScore(int amount, bool allowDuringTutorial = false)
     {
-        if (m_IsTutorial)
+        if (m_IsTutorial && !allowDuringTutorial)
             return;
 
         int finalAmount = amount;

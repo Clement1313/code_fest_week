@@ -4774,7 +4774,9 @@ MonoBehaviour:
     m_HorizontalOverflow: 0
     m_VerticalOverflow: 0
     m_LineSpacing: 1
-  m_Text: Char Name
+  m_Text: |-
+    CHABWAY
+    CHURFER
 --- !u!222 &520105015
 CanvasRenderer:
   m_ObjectHideFlags: 0
@@ -9397,7 +9399,6 @@ MonoBehaviour:
   manager: {fileID: 0}
   inventoryCanvas: {fileID: 869760747}
   charNameDisplay: {fileID: 520105014}
-  gameLogoSprite: {fileID: 21300000, guid: 3400b92beb9f77c4e919dbdb39e9ec8c, type: 3}
   charSelect: {fileID: 574961894}
   charPosition: {fileID: 764160786}
   themeNameDisplay: {fileID: 1403348306}
@@ -15594,7 +15595,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &1305508087
 RectTransform:
   m_ObjectHideFlags: 0
@@ -17938,7 +17939,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &1470943696
 RectTransform:
   m_ObjectHideFlags: 0
@@ -22069,7 +22070,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &1784961612
 RectTransform:
   m_ObjectHideFlags: 0
@@ -22872,7 +22873,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &1822183924
 RectTransform:
   m_ObjectHideFlags: 0

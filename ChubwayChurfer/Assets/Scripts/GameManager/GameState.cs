@@ -151,6 +151,12 @@ public class GameState : AState
         pauseButton.gameObject.SetActive(!trackManager.isTutorial);
         gameOverPopup.SetActive(false);
 
+		// Fish are score pickups now, not a currency displayed in the HUD.
+		if (coinText != null && coinText.transform.parent != null)
+			coinText.transform.parent.gameObject.SetActive(false);
+		if (premiumText != null && premiumText.transform.parent != null)
+			premiumText.transform.parent.gameObject.SetActive(false);
+
         sideSlideTuto.SetActive(false);
         upSlideTuto.SetActive(false);
         downSlideTuto.SetActive(false);
@@ -358,9 +364,6 @@ public class GameState : AState
 
     protected void UpdateUI()
     {
-        coinText.text = trackManager.characterController.coins.ToString();
-        premiumText.text = trackManager.characterController.premium.ToString();
-
 		for (int i = 0; i < 3; ++i)
 		{
 
@@ -421,12 +424,7 @@ public class GameState : AState
 
         yield return new WaitForSeconds(2.0f);
         if (currentModifier.OnRunEnd(this))
-        {
-            if (trackManager.isRerun)
-                manager.SwitchState("GameOver");
-            else
-                OpenGameOverPopup();
-        }
+			GameOver();
 	}
 
     protected void ClearPowerup()
@@ -444,13 +442,8 @@ public class GameState : AState
 
     public void OpenGameOverPopup()
     {
-        premiumForLifeButton.interactable = PlayerData.instance.premium >= 3;
-
-        premiumCurrencyOwned.text = PlayerData.instance.premium.ToString();
-
-        ClearPowerup();
-
-        gameOverPopup.SetActive(true);
+		// Second-chance purchases have been removed.
+		GameOver();
     }
 
     public void GameOver()
@@ -460,21 +453,7 @@ public class GameState : AState
 
     public void PremiumForLife()
     {
-        //This check avoid a bug where the video AND premium button are released on the same frame.
-        //It lead to the ads playing and then crashing the game as it try to start the second wind again.
-        //Whichever of those function run first will take precedence
-        if (m_GameoverSelectionDone)
-            return;
-
-        m_GameoverSelectionDone = true;
-
-        PlayerData.instance.premium -= 3;
-        //since premium are directly added to the PlayerData premium count, we also need to remove them from the current run premium count
-        // (as if you had 0, grabbed 3 during that run, you can directly buy a new chance). But for the case where you add one in the playerdata
-        // and grabbed 2 during that run, we don't want to remove 3, otherwise will have -1 premium for that run!
-        trackManager.characterController.premium -= Mathf.Min(trackManager.characterController.premium, 3);
-
-        SecondWind();
+		GameOver();
     }
 
     public void SecondWind()
