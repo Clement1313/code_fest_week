@@ -71,6 +71,9 @@ public class LoadoutState : AState
     protected Text m_HoldStatus;
     protected RectTransform m_HoldVisual;
     protected Sprite m_HoldCircleSprite;
+    protected GameObject m_EpitaLogo;
+    protected RectTransform m_LeaderboardPanel;
+    protected Vector2 m_LastLeaderboardCanvasSize = new Vector2(-1.0f, -1.0f);
     protected float m_HoldStartTimer;
     protected bool m_CanStart;
     protected bool m_StartTriggered;
@@ -90,6 +93,7 @@ public class LoadoutState : AState
         if (missionPopup != null) missionPopup.gameObject.SetActive(false);
 
         SetupGameTitle();
+        SetupBrandLogos();
         SetupKinectStartInstruction();
         SetupHoldToStartUI();
         SetupDefaultLeaderboard();
@@ -135,6 +139,73 @@ public class LoadoutState : AState
         Transform oldLogo = charNameDisplay.transform.Find("GameLogo");
         if (oldLogo != null)
             oldLogo.gameObject.SetActive(false);
+    }
+
+    void SetupBrandLogos()
+    {
+        if (inventoryCanvas == null)
+            return;
+
+        m_EpitaLogo = SetupBrandLogo(
+            "EpitaLogo",
+            "UI/Branding/EPITA",
+            new Vector2(205.0f, 145.0f),
+            new Vector2(350.0f, 237.0f));
+
+        SetupBrandLogo(
+            "ImageLogo",
+            "UI/Branding/IMAGE",
+            new Vector2(205.0f, -125.0f),
+            new Vector2(210.0f, 207.0f));
+    }
+
+    GameObject SetupBrandLogo(string objectName, string resourcePath, Vector2 position, Vector2 size)
+    {
+        Sprite logoSprite = Resources.Load<Sprite>(resourcePath);
+        if (logoSprite == null)
+        {
+            Debug.LogWarning("Brand logo sprite could not be loaded from Resources/" + resourcePath + ".");
+            return null;
+        }
+
+        Transform existing = inventoryCanvas.transform.Find(objectName);
+        GameObject logoObject = existing != null
+            ? existing.gameObject
+            : new GameObject(objectName, typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+
+        if (existing == null)
+            logoObject.transform.SetParent(inventoryCanvas.transform, false);
+        logoObject.SetActive(true);
+
+        RectTransform logoRect = logoObject.GetComponent<RectTransform>();
+        logoRect.anchorMin = new Vector2(0.0f, 0.5f);
+        logoRect.anchorMax = new Vector2(0.0f, 0.5f);
+        logoRect.pivot = new Vector2(0.5f, 0.5f);
+        logoRect.anchoredPosition = position;
+        logoRect.sizeDelta = size;
+
+        Image logoImage = logoObject.GetComponent<Image>();
+        logoImage.sprite = logoSprite;
+        logoImage.preserveAspect = true;
+        logoImage.raycastTarget = false;
+
+        // Remove the previous offset shadow so the logos only use a clean outline.
+        Shadow[] effects = logoObject.GetComponents<Shadow>();
+        for (int i = 0; i < effects.Length; ++i)
+        {
+            if (effects[i].GetType() == typeof(Shadow))
+                Destroy(effects[i]);
+        }
+
+        Outline logoOutline = logoObject.GetComponent<Outline>();
+        if (logoOutline == null)
+            logoOutline = logoObject.AddComponent<Outline>();
+        logoOutline.effectColor = new Color(0.02f, 0.03f, 0.06f, 0.95f);
+        logoOutline.effectDistance = new Vector2(5.0f, -5.0f);
+        logoOutline.useGraphicAlpha = true;
+
+        logoObject.transform.SetAsLastSibling();
+        return logoObject;
     }
 
     void SetupKinectStartInstruction()
@@ -395,15 +466,15 @@ public class LoadoutState : AState
             RectTransform panel = leaderboard.transform.GetChild(0) as RectTransform;
             if (panel != null)
             {
+                m_LeaderboardPanel = panel;
                 panel.anchorMin = new Vector2(1.0f, 0.5f);
                 panel.anchorMax = new Vector2(1.0f, 0.5f);
                 panel.pivot = new Vector2(1.0f, 0.5f);
-                panel.anchoredPosition = new Vector2(-18.0f, 0.0f);
 
                 // Keep the leaderboard's native 580x780 layout so its fixed-size rows
-                // remain inside the frame, then scale the complete panel uniformly.
+                // remain inside the frame. Its scale is adapted to the current aspect ratio.
                 panel.sizeDelta = new Vector2(580.0f, 780.0f);
-                panel.localScale = Vector3.one * 0.62f;
+                UpdateLeaderboardLayout(true);
 
                 // The panel stays open by default, therefore its close button is also removed.
                 Button[] panelButtons = panel.GetComponentsInChildren<Button>(true);
@@ -413,6 +484,41 @@ public class LoadoutState : AState
         }
 
         leaderboard.Populate();
+    }
+
+    void UpdateLeaderboardLayout(bool force = false)
+    {
+        if (leaderboard == null || m_LeaderboardPanel == null)
+            return;
+
+        RectTransform canvasRect = leaderboard.transform as RectTransform;
+        if (canvasRect == null)
+            return;
+
+        Vector2 canvasSize = canvasRect.rect.size;
+        if (canvasSize.x <= 0.0f || canvasSize.y <= 0.0f)
+            return;
+
+        if (!force && Vector2.SqrMagnitude(canvasSize - m_LastLeaderboardCanvasSize) < 0.25f)
+            return;
+
+        m_LastLeaderboardCanvasSize = canvasSize;
+
+        const float nativeWidth = 580.0f;
+        const float nativeHeight = 780.0f;
+        const float maximumScale = 0.68f;
+
+        // On wide windows the panel keeps its normal size. On square or narrow windows,
+        // limit it to roughly one third of the available width so it never covers the menu.
+        float widthScale = canvasSize.x * 0.32f / nativeWidth;
+        float heightScale = canvasSize.y * 0.88f / nativeHeight;
+        float responsiveScale = Mathf.Clamp(
+            Mathf.Min(maximumScale, widthScale, heightScale),
+            0.38f,
+            maximumScale);
+
+        m_LeaderboardPanel.localScale = Vector3.one * responsiveScale;
+        m_LeaderboardPanel.anchoredPosition = new Vector2(-18.0f, 0.0f);
     }
 
     public override void Exit(AState to)
@@ -474,6 +580,7 @@ public class LoadoutState : AState
         }
 
         UpdateHoldToStart();
+        UpdateLeaderboardLayout();
 
         if(m_Character != null)
         {

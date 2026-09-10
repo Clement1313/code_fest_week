@@ -148,6 +148,7 @@ public class GameState : AState
         canvas.gameObject.SetActive(true);
         pauseMenu.gameObject.SetActive(false);
         wholeUI.gameObject.SetActive(true);
+        SetupScoreHud();
         // Pause is controlled with Escape; the old HUD button stays hidden.
         pauseButton.gameObject.SetActive(false);
         gameOverPopup.SetActive(false);
@@ -199,6 +200,38 @@ public class GameState : AState
         m_PowerupIcons.Clear();
 
         StartCoroutine(trackManager.Begin());
+    }
+
+    void SetupScoreHud()
+    {
+        if (scoreText == null)
+            return;
+
+        // ScoreText is nested inside ScoreLabel, itself contained by ScoreZone.
+        // Re-anchor the complete block so its margin stays stable at every resolution.
+        Transform scoreLabel = scoreText.transform.parent;
+        RectTransform scoreZone = scoreLabel != null ? scoreLabel.parent as RectTransform : null;
+        if (scoreZone == null)
+            return;
+
+        scoreZone.anchorMin = new Vector2(0.0f, 1.0f);
+        scoreZone.anchorMax = new Vector2(0.0f, 1.0f);
+        scoreZone.pivot = new Vector2(0.0f, 1.0f);
+        scoreZone.anchoredPosition = new Vector2(18.0f, -18.0f);
+        scoreZone.localScale = Vector3.one * 1.25f;
+
+        if (distanceText == null)
+            return;
+
+        RectTransform distanceZone = distanceText.transform.parent as RectTransform;
+        if (distanceZone == null)
+            return;
+
+        distanceZone.anchorMin = new Vector2(0.0f, 1.0f);
+        distanceZone.anchorMax = new Vector2(0.0f, 1.0f);
+        distanceZone.pivot = new Vector2(0.0f, 1.0f);
+        distanceZone.anchoredPosition = new Vector2(18.0f, -104.0f);
+        distanceZone.localScale = Vector3.one * 1.25f;
     }
 
     public override string GetName()
