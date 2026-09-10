@@ -162,6 +162,11 @@ public class CharacterInputController : MonoBehaviour
         m_AllowLaneChangeWhileStopped = false;
 	}
 
+    public void SetLaneChangeWhileStopped(bool allowed)
+    {
+        m_AllowLaneChangeWhileStopped = allowed;
+    }
+
     public void StopMoving(bool allowLaneChangeWhileStopped = false)
     {
 	    m_IsRunning = false;

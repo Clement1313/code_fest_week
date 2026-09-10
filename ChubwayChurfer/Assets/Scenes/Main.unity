@@ -24704,7 +24704,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   characterController: {fileID: 2094493432}
-  minSpeed: 10
+  minSpeed: 11
   maxSpeed: 30
   speedStep: 4
   laneOffset: 1.5

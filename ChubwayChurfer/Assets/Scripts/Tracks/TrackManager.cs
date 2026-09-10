@@ -158,6 +158,7 @@ public class TrackManager : MonoBehaviour
     IEnumerator WaitToStart()
     {
         characterController.character.animator.Play(s_StartHash);
+        characterController.SetLaneChangeWhileStopped(true);
         float length = k_CountdownToStartLength;
         m_TimeToStart = length;
 

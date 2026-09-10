@@ -148,7 +148,8 @@ public class GameState : AState
         canvas.gameObject.SetActive(true);
         pauseMenu.gameObject.SetActive(false);
         wholeUI.gameObject.SetActive(true);
-        pauseButton.gameObject.SetActive(!trackManager.isTutorial);
+        // Pause is controlled with Escape; the old HUD button stays hidden.
+        pauseButton.gameObject.SetActive(false);
         gameOverPopup.SetActive(false);
 
 		// Fish are score pickups now, not a currency displayed in the HUD.
@@ -207,6 +208,14 @@ public class GameState : AState
 
     public override void Tick()
     {
+        if (!m_Finished && Input.GetKeyDown(KeyCode.Escape))
+        {
+            if (AudioListener.pause)
+                Resume();
+            else
+                Pause();
+        }
+
         if (m_Finished)
         {
             //if we are finished, we check if advertisement is ready, allow to disable the button until it is ready
@@ -340,7 +349,7 @@ public class GameState : AState
 	public void Resume()
 	{
 		Time.timeScale = 1.0f;
-		pauseButton.gameObject.SetActive(true);
+		pauseButton.gameObject.SetActive(false);
 		pauseMenu.gameObject.SetActive (false);
 		wholeUI.gameObject.SetActive(true);
 		if (m_WasMoving)
@@ -650,7 +659,7 @@ public class GameState : AState
         trackManager.newSegmentCreated = null;
 
         DisplayTutorial(false);
-        pauseButton.gameObject.SetActive(true);
+        pauseButton.gameObject.SetActive(false);
         trackManager.SwitchToRegularTheme();
     }
 
@@ -701,7 +710,7 @@ public class GameState : AState
             m_TutorialCompletionMessage.text = m_TutorialCompletionBaseMessage;
 
         DisplayTutorial(false);
-        pauseButton.gameObject.SetActive(true);
+        pauseButton.gameObject.SetActive(false);
         trackManager.SwitchToRegularTheme();
     }
 
