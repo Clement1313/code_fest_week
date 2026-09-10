@@ -66,6 +66,7 @@ public class LoadoutState : AState
 	protected Modifier m_CurrentModifier = new Modifier();
 
     const float k_HoldToStartDuration = 3.0f;
+    const float k_HoldReleaseDrainSpeed = 1.0f;
     protected Image m_HoldProgress;
     protected Text m_HoldStatus;
     protected RectTransform m_HoldVisual;
@@ -324,7 +325,18 @@ public class LoadoutState : AState
 
         if (!Input.GetKey(KeyCode.S))
         {
-            ResetHoldToStart("AU CENTRE, MAINTENEZ S 3 SEC");
+            // Releasing S now drains the existing charge instead of instantly
+            // clearing it. Pressing again resumes from the remaining progress.
+            m_HoldStartTimer = Mathf.MoveTowards(
+                m_HoldStartTimer,
+                0.0f,
+                Time.unscaledDeltaTime * k_HoldReleaseDrainSpeed);
+
+            if (m_HoldProgress != null)
+                m_HoldProgress.fillAmount = Mathf.Clamp01(
+                    m_HoldStartTimer / k_HoldToStartDuration);
+            if (m_HoldStatus != null)
+                m_HoldStatus.text = "AU CENTRE, MAINTENEZ S 3 SEC";
             return;
         }
 

@@ -56,6 +56,7 @@ public class CharacterInputController : MonoBehaviour
 
 	protected bool m_IsInvincible;
 	protected bool m_IsRunning;
+    protected bool m_AllowLaneChangeWhileStopped;
 	
     protected float m_JumpStart;
     protected bool m_Jumping;
@@ -121,6 +122,7 @@ public class CharacterInputController : MonoBehaviour
 	public void Begin()
 	{
 		m_IsRunning = false;
+        m_AllowLaneChangeWhileStopped = false;
         character.animator.SetBool(s_DeadHash, false);
 
 		characterCollider.Init ();
@@ -157,11 +159,13 @@ public class CharacterInputController : MonoBehaviour
 	public void StartMoving()
 	{
 		m_IsRunning = true;
+        m_AllowLaneChangeWhileStopped = false;
 	}
 
-    public void StopMoving()
+    public void StopMoving(bool allowLaneChangeWhileStopped = false)
     {
 	    m_IsRunning = false;
+        m_AllowLaneChangeWhileStopped = allowLaneChangeWhileStopped;
         trackManager.StopMove();
         if (character.animator)
         {
@@ -390,7 +394,7 @@ public class CharacterInputController : MonoBehaviour
 
 	public void ChangeLane(int direction)
     {
-		if (!m_IsRunning)
+		if (!m_IsRunning && !m_AllowLaneChangeWhileStopped)
 			return;
 
         int targetLane = m_CurrentLane + direction;

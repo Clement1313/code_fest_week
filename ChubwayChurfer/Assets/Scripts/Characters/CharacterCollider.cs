@@ -128,7 +128,9 @@ public class CharacterCollider : MonoBehaviour
             if (m_Invincible || controller.IsCheatInvincible())
                 return;
 
-            controller.StopMoving();
+            // Pause forward movement for the hit animation, but keep lateral
+            // controls active while the temporary invincibility protects the player.
+            controller.StopMoving(true);
 
 			c.enabled = false;
 
@@ -162,6 +164,8 @@ public class CharacterCollider : MonoBehaviour
             // The collision killed the player, record all data to analytics.
 			else
 			{
+                // A lethal hit must keep every movement locked.
+                controller.StopMoving(false);
 				m_Audio.PlayOneShot(controller.character.deathSound);
 
 				m_DeathData.character = controller.character.characterName;

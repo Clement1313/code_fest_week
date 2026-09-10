@@ -58,6 +58,14 @@ public class TrackManager : MonoBehaviour
     [Header("Tutorial")]
     public ThemeData tutorialThemeData;
 
+    [Tooltip("Multiplier applied to the initial distance before the first tutorial obstacle.")]
+    [Min(1.0f)]
+    public float tutorialFirstObstacleDistanceMultiplier = 2.0f;
+
+    [Tooltip("Number of completely obstacle-free segments before the tutorial begins.")]
+    [Min(0)]
+    public int tutorialStartingSafeSegments = 1;
+
     public System.Action<TrackSegment> newSegmentCreated;
     public System.Action<TrackSegment> currentSegementChanged;
 
@@ -113,6 +121,7 @@ public class TrackManager : MonoBehaviour
     protected bool m_Rerun;     // This lets us know if we are entering a game over (ads) state or starting a new game (see GameState)
 
     protected bool m_IsTutorial; //Tutorial is a special run that don't chance section until the tutorial step is "validated" by the TutorialState.
+    protected bool m_TutorialFirstObstacleDistanceAdjusted;
     
     Vector3 m_CameraOriginalPos = Vector3.zero;
     
@@ -175,6 +184,7 @@ public class TrackManager : MonoBehaviour
         if (!m_Rerun)
         {
             firstObstacle = true;
+            m_TutorialFirstObstacleDistanceAdjusted = false;
             m_CameraOriginalPos = Camera.main.transform.position;
             
             if (m_TrackSeed != -1)
@@ -233,7 +243,9 @@ public class TrackManager : MonoBehaviour
             m_Score = 0;
             m_ScoreAccum = 0;
 
-            m_SafeSegementLeft = m_IsTutorial ? 0 : k_StartingSafeSegments;
+            m_SafeSegementLeft = m_IsTutorial
+                ? Mathf.Max(0, tutorialStartingSafeSegments)
+                : k_StartingSafeSegments;
 
             Coin.coinPool = new Pooler(currentTheme.collectiblePrefab, k_StartingCoinPoolSize);
 
@@ -543,16 +555,58 @@ public class TrackManager : MonoBehaviour
         newSegment.transform.localScale = new Vector3((Random.value > 0.5f ? -1 : 1), 1, 1);
         newSegment.objectRoot.localScale = new Vector3(1.0f / newSegment.transform.localScale.x, 1, 1);
 
+        AdjustFirstTutorialObstacleDistance(newSegment);
+
         if (m_SafeSegementLeft <= 0)
         {
             SpawnObstacle(newSegment);
         }
         else
+        {
             m_SafeSegementLeft -= 1;
+
+            // The tutorial logic also reads this array to decide when an obstacle
+            // has been cleared. Empty it on the lead-in segment so this safe area
+            // cannot be mistaken for a completed tutorial obstacle.
+            if (m_IsTutorial)
+                newSegment.obstaclePositions = new float[0];
+        }
 
         m_Segments.Add(newSegment);
 
         if (newSegmentCreated != null) newSegmentCreated.Invoke(newSegment);
+    }
+
+    void AdjustFirstTutorialObstacleDistance(TrackSegment segment)
+    {
+        if (!m_IsTutorial || m_TutorialFirstObstacleDistanceAdjusted ||
+            m_Segments.Count != 0 || segment == null || segment.worldLength <= 0.0f ||
+            segment.obstaclePositions == null || segment.obstaclePositions.Length == 0)
+        {
+            return;
+        }
+
+        m_TutorialFirstObstacleDistanceAdjusted = true;
+
+        float originalFirstPosition = segment.obstaclePositions[0];
+        float originalObstacleDistance = originalFirstPosition * segment.worldLength;
+        float originalReactionDistance = Mathf.Max(0.0f,
+            originalObstacleDistance - k_StartingSegmentDistance);
+        float desiredObstacleDistance = k_StartingSegmentDistance +
+            originalReactionDistance * Mathf.Max(1.0f, tutorialFirstObstacleDistanceMultiplier);
+        float desiredPosition = desiredObstacleDistance / segment.worldLength;
+
+        // Keep a little space before the end of the segment and before a possible
+        // second obstacle. Current tutorial segments contain one obstacle, but the
+        // second limit keeps this safe if their content changes later.
+        float maximumPosition = 0.94f;
+        if (segment.obstaclePositions.Length > 1)
+            maximumPosition = Mathf.Min(maximumPosition, segment.obstaclePositions[1] - 0.05f);
+
+        segment.obstaclePositions[0] = Mathf.Clamp(
+            desiredPosition,
+            originalFirstPosition,
+            Mathf.Max(originalFirstPosition, maximumPosition));
     }
 
 
