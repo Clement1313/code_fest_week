@@ -10,18 +10,27 @@
 // Un flux video couleur peut etre active/desactive a tout moment en
 // appuyant sur la touche 'V' (variable booleenne g_videoStreamEnabled).
 // L'affichage se fait dans une fenetre Win32 native, dessinee avec GDI
-// (StretchDIBits) -- aucune dependance externe type OpenCV.
+// (StretchDIBits) -- aucune dependance externe type OpenCV. Le squelette
+// detecte (os + articulations) et un texte d'etat (zone/posture) sont
+// dessines en surimpression sur ce flux video.
 //
-// NOUVEAU : le programme se connecte en TCP (127.0.0.1:5000, non
-// bloquant, avec reconnexion automatique) a un serveur Python (pynput)
-// qui traduit des commandes texte ("haut", "bas", "gauche", "droite"...)
-// en appuis clavier reels. On n'envoie PAS l'etat absolu (zone/posture)
-// mais uniquement le mouvement correspondant a la TRANSITION d'etat :
+// Le programme se connecte en TCP (127.0.0.1:5000, non bloquant, avec
+// reconnexion automatique) a un serveur Python (pynput) qui traduit des
+// commandes texte ("haut", "bas", "gauche", "droite", "start_down",
+// "start_up"...) en appuis clavier reels. On n'envoie PAS l'etat absolu
+// (zone/posture) mais uniquement le mouvement correspondant a la
+// TRANSITION d'etat :
 //   - gauche -> milieu ou milieu -> droite  => "droite"
 //   - droite -> milieu ou milieu -> gauche  => "gauche"
 //   - (peu importe l'etat de depart) -> saut     => "haut"
 //   - (peu importe l'etat de depart) -> accroupi => "bas"
 //   - -> debout : rien n'est envoye (position neutre = pas d'action)
+//
+// De plus, un sejour continu en zone MILIEU declenche un maintien reel
+// de la touche 'S' (key down / key up separes, pas un simple clic) :
+// apres 3 secondes en MILIEU, 'S' est enfoncee ("start_down"), puis
+// relachee automatiquement 4 secondes plus tard ("start_up"), ou plus
+// tot si le joueur quitte la zone MILIEU entre-temps.
 //
 // Setup du projet Visual Studio :
 //   - Includes : $(KINECTSDK10_DIR)inc
@@ -43,15 +52,23 @@
 // IMPORTANT : winsock2.h doit etre inclus avant windows.h (ou
 // WIN32_LEAN_AND_MEAN doit etre defini avant) pour eviter les conflits
 // avec l'ancien winsock.h inclus automatiquement par windows.h.
+//
+// IMPORTANT (2) : WIN32_LEAN_AND_MEAN empeche windows.h d'inclure les
+// en-tetes COM (ole2.h -> objbase.h -> unknwn.h) qui definissent la
+// macro `interface` (#define interface struct). NuiSensor.h utilise
+// cette macro pour declarer ses interfaces COM (INuiSensor, etc.).
+// Sans elle, la compilation echoue en cascade (C4430/C2146/C2371).
+// On inclut donc explicitement <unknwn.h> avant <NuiApi.h>.
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <unknwn.h> 
+#include <unknwn.h>   // definit la macro `interface` (COM), requis par NuiSensor.h
 #include <NuiApi.h>
 #include <iostream>
 #include <string>
 #include <vector>
+#include <cstdio>
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -106,7 +123,7 @@ static const char* ZoneToString(Zone z)
 enum class Posture { ACCROUPI, DEBOUT, SAUT };
 
 // Seuils de declenchement, en metres, par rapport a la reference.
-static const float JUMP_Y_THRESHOLD    =  0.06f; // au-dessus -> SAUT
+static const float JUMP_Y_THRESHOLD    =  0.10f; // au-dessus -> SAUT
 static const float CROUCH_Y_THRESHOLD  = -0.15f; // en dessous -> ACCROUPI
 
 // Nombre de frames utilisees pour etablir la position de reference au
@@ -136,6 +153,24 @@ static bool IsSkeletonStateUsable(NUI_SKELETON_TRACKING_STATE state)
     return state == NUI_SKELETON_TRACKED || state == NUI_SKELETON_POSITION_ONLY;
 }
 
+// --- Filtrage par profondeur (distance au capteur) ----------------------
+//
+// Ignore tout squelette (verrouillage ou nouvelle detection) dont la
+// distance au capteur (composante Z du hip_center, en metres) depasse ce
+// seuil. Utile pour exclure une personne trop loin du capteur (fond de
+// piece, couloir visible derriere, etc.). Le champ de profondeur fiable
+// de la Kinect v1 va jusqu'a environ 4-4.5 m ; au-dela les donnees sont
+// de toute facon peu exploitables.
+static const float MAX_DETECTION_DEPTH_METERS = 3.0f;
+
+// Verifie que le hip_center du squelette est a une distance exploitable :
+// Z > 0 (position valide) et <= au seuil configure ci-dessus.
+static bool IsSkeletonWithinDepthRange(const NUI_SKELETON_DATA& skeleton)
+{
+    float z = skeleton.SkeletonPositions[NUI_SKELETON_POSITION_HIP_CENTER].z;
+    return z > 0.0f && z <= MAX_DETECTION_DEPTH_METERS;
+}
+
 static Posture GetPostureFromY(float currentY, float baselineY)
 {
     float delta = currentY - baselineY;
@@ -163,12 +198,30 @@ static void ResetYCalibration()
     g_calibrationSum     = 0.0f;
 }
 
+// --- Detection "maintien au milieu" (signal start maintenu) --------------
+//
+// Si le joueur reste en continu dans la zone MILIEU pendant au moins
+// MIDDLE_HOLD_BEFORE_PRESS_MS, on ENFONCE la touche 'S' (start_down,
+// key down reel, pas un simple clic) et on la maintient MIDDLE_HOLD_
+// DURATION_MS de plus avant de la relacher automatiquement (start_up).
+// Si le joueur quitte la zone MILIEU pendant que la touche est
+// enfoncee, elle est relachee immediatement pour ne jamais rester
+// bloquee. Aucun appui n'est envoye si le joueur quitte MILIEU avant
+// le declenchement initial (avant les 3 premieres secondes).
+static const DWORD MIDDLE_HOLD_BEFORE_PRESS_MS   = 100;  // attente avant le press
+static const DWORD MIDDLE_HOLD_DURATION_MS       = 4000; // duree du maintien apres le press
+static const DWORD MIDDLE_HOLD_RETRIGGER_DELAY_MS = 100; // pause apres le relachement avant de reprendre la detection
+
+enum class MiddleHoldState { IDLE, WAITING, HOLDING, RELEASED };
 // --- Communication reseau avec le serveur clavier (Python) --------------
 //
 // Le script Python (pynput) ecoute en TCP sur 127.0.0.1:5000 et attend
 // des commandes texte terminees par '\n' (ex: "gauche\n", "haut\n").
-// Chaque commande recue declenche une pression + relachement de la
-// touche clavier correspondante (voir le dictionnaire KEYS du script).
+// La plupart des commandes recues declenchent une pression + relachement
+// de la touche clavier correspondante (voir le dictionnaire KEYS du
+// script). Deux commandes speciales, "start_down" et "start_up", font
+// respectivement un press et un release explicites et separes de la
+// touche 'S', pour un vrai maintien plutot qu'un simple clic.
 //
 // La connexion est geree en mode NON BLOQUANT : si le serveur Python
 // n'est pas encore lance, ou se ferme/plante en cours de route, la
@@ -277,10 +330,10 @@ static void PollKeyboardConnection()
     }
 }
 
-// Envoie une commande texte (ex: "haut", "gauche"...) au serveur Python.
-// Ne fait rien si pas connecte. En cas d'echec d'envoi (serveur ferme
-// la connexion), on repasse en mode "deconnecte" pour retenter plus
-// tard via PollKeyboardConnection().
+// Envoie une commande texte (ex: "haut", "gauche", "start_down"...) au
+// serveur Python. Ne fait rien si pas connecte. En cas d'echec d'envoi
+// (serveur ferme la connexion), on repasse en mode "deconnecte" pour
+// retenter plus tard via PollKeyboardConnection().
 static void SendKeyCommand(const char* command)
 {
     if (!g_networkConnected || g_keyboardSocket == INVALID_SOCKET)
@@ -363,6 +416,159 @@ static std::vector<BYTE> g_videoBuffer(VIDEO_WIDTH * VIDEO_HEIGHT * 4, 0);
 
 static BITMAPINFO g_bmi = {};
 
+// --- Superposition squelette + infos sur le flux video ------------------
+//
+// A chaque frame squelette traitee (ProcessSkeletonFrame), on projette
+// les articulations du joueur verrouille dans l'espace image couleur
+// (640x480, meme resolution que la fenetre video) via les fonctions de
+// mapping du SDK. Ces positions ecran sont simplement relues (jamais
+// recalculees) au moment du dessin dans WM_PAINT.
+
+// Paires de joints formant les "os" du squelette, pour tracer les
+// segments reliant les articulations.
+static const NUI_SKELETON_POSITION_INDEX SKELETON_BONES[][2] =
+{
+    { NUI_SKELETON_POSITION_HIP_CENTER,      NUI_SKELETON_POSITION_SPINE },
+    { NUI_SKELETON_POSITION_SPINE,           NUI_SKELETON_POSITION_SHOULDER_CENTER },
+    { NUI_SKELETON_POSITION_SHOULDER_CENTER, NUI_SKELETON_POSITION_HEAD },
+
+    { NUI_SKELETON_POSITION_SHOULDER_CENTER, NUI_SKELETON_POSITION_SHOULDER_LEFT },
+    { NUI_SKELETON_POSITION_SHOULDER_LEFT,   NUI_SKELETON_POSITION_ELBOW_LEFT },
+    { NUI_SKELETON_POSITION_ELBOW_LEFT,      NUI_SKELETON_POSITION_WRIST_LEFT },
+    { NUI_SKELETON_POSITION_WRIST_LEFT,      NUI_SKELETON_POSITION_HAND_LEFT },
+
+    { NUI_SKELETON_POSITION_SHOULDER_CENTER, NUI_SKELETON_POSITION_SHOULDER_RIGHT },
+    { NUI_SKELETON_POSITION_SHOULDER_RIGHT,  NUI_SKELETON_POSITION_ELBOW_RIGHT },
+    { NUI_SKELETON_POSITION_ELBOW_RIGHT,     NUI_SKELETON_POSITION_WRIST_RIGHT },
+    { NUI_SKELETON_POSITION_WRIST_RIGHT,     NUI_SKELETON_POSITION_HAND_RIGHT },
+
+    { NUI_SKELETON_POSITION_HIP_CENTER,      NUI_SKELETON_POSITION_HIP_LEFT },
+    { NUI_SKELETON_POSITION_HIP_LEFT,        NUI_SKELETON_POSITION_KNEE_LEFT },
+    { NUI_SKELETON_POSITION_KNEE_LEFT,       NUI_SKELETON_POSITION_ANKLE_LEFT },
+    { NUI_SKELETON_POSITION_ANKLE_LEFT,      NUI_SKELETON_POSITION_FOOT_LEFT },
+
+    { NUI_SKELETON_POSITION_HIP_CENTER,      NUI_SKELETON_POSITION_HIP_RIGHT },
+    { NUI_SKELETON_POSITION_HIP_RIGHT,       NUI_SKELETON_POSITION_KNEE_RIGHT },
+    { NUI_SKELETON_POSITION_KNEE_RIGHT,      NUI_SKELETON_POSITION_ANKLE_RIGHT },
+    { NUI_SKELETON_POSITION_ANKLE_RIGHT,     NUI_SKELETON_POSITION_FOOT_RIGHT },
+};
+static const int SKELETON_BONE_COUNT = sizeof(SKELETON_BONES) / sizeof(SKELETON_BONES[0]);
+
+// Position ecran (repere de l'image couleur 640x480) de chaque
+// articulation du joueur verrouille, et validite individuelle (un
+// joint NOT_TRACKED n'est pas dessine).
+static POINT g_jointScreenPos[NUI_SKELETON_POSITION_COUNT];
+static bool  g_jointValid[NUI_SKELETON_POSITION_COUNT];
+static bool  g_hasSkeletonOverlay = false; // un squelette est-il actuellement projete ?
+
+// Texte d'etat (zone / posture) affiche en surimpression sur la video.
+static char g_overlayStatusText[256] = "En attente d'un squelette...";
+
+// Convertit une position squelette (metres, repere capteur) en pixel
+// de l'image couleur 640x480. Passe par l'image depth comme etape
+// intermediaire (requis par le SDK), mais aucun flux depth n'a besoin
+// d'etre ouvert : c'est une transformation geometrique pure.
+static bool MapSkeletonPointToScreen(const Vector4& skeletonPoint, POINT& outScreen)
+{
+    LONG   depthX = 0, depthY = 0;
+    USHORT depthValue = 0;
+
+    NuiTransformSkeletonToDepthImage(
+        skeletonPoint,
+        &depthX, &depthY, &depthValue,
+        NUI_IMAGE_RESOLUTION_640x480);
+
+    LONG colorX = 0, colorY = 0;
+    HRESULT hr = NuiImageGetColorPixelCoordinatesFromDepthPixelAtResolution(
+        NUI_IMAGE_RESOLUTION_640x480,  // resolution couleur (fenetre video)
+        NUI_IMAGE_RESOLUTION_640x480,  // resolution depth utilisee ci-dessus
+        NULL,                          // pas de zoom/pan numerique
+        depthX, depthY, depthValue,
+        &colorX, &colorY);
+
+    if (FAILED(hr))
+        return false;
+
+    outScreen.x = colorX;
+    outScreen.y = colorY;
+    return true;
+}
+
+// Projette chaque articulation trackee du squelette verrouille ; a
+// appeler a chaque frame squelette traitee (ProcessSkeletonFrame).
+static void UpdateSkeletonOverlay(const NUI_SKELETON_DATA& skeleton)
+{
+    g_hasSkeletonOverlay = true;
+
+    for (int i = 0; i < NUI_SKELETON_POSITION_COUNT; ++i)
+    {
+        if (skeleton.eSkeletonPositionTrackingState[i] == NUI_SKELETON_POSITION_NOT_TRACKED)
+        {
+            g_jointValid[i] = false;
+            continue;
+        }
+
+        g_jointValid[i] = MapSkeletonPointToScreen(skeleton.SkeletonPositions[i], g_jointScreenPos[i]);
+    }
+}
+
+// Dessine les os et les articulations du squelette verrouille par
+// dessus l'image video deja blittee (appele depuis WM_PAINT).
+static void DrawSkeletonOverlay(HDC hdc)
+{
+    if (!g_hasSkeletonOverlay)
+        return;
+
+    HPEN   bonePen    = CreatePen(PS_SOLID, 3, RGB(0, 255, 0));
+    HPEN   oldPen     = (HPEN)SelectObject(hdc, bonePen);
+    HBRUSH jointBrush = CreateSolidBrush(RGB(255, 0, 0));
+    HBRUSH oldBrush   = (HBRUSH)SelectObject(hdc, jointBrush);
+
+    for (int i = 0; i < SKELETON_BONE_COUNT; ++i)
+    {
+        int a = SKELETON_BONES[i][0];
+        int b = SKELETON_BONES[i][1];
+
+        if (!g_jointValid[a] || !g_jointValid[b])
+            continue;
+
+        MoveToEx(hdc, g_jointScreenPos[a].x, g_jointScreenPos[a].y, NULL);
+        LineTo(hdc, g_jointScreenPos[b].x, g_jointScreenPos[b].y);
+    }
+
+    const int JOINT_RADIUS = 5;
+    for (int i = 0; i < NUI_SKELETON_POSITION_COUNT; ++i)
+    {
+        if (!g_jointValid[i])
+            continue;
+
+        int x = g_jointScreenPos[i].x;
+        int y = g_jointScreenPos[i].y;
+        Ellipse(hdc, x - JOINT_RADIUS, y - JOINT_RADIUS, x + JOINT_RADIUS, y + JOINT_RADIUS);
+    }
+
+    SelectObject(hdc, oldPen);
+    SelectObject(hdc, oldBrush);
+    DeleteObject(bonePen);
+    DeleteObject(jointBrush);
+}
+
+// Affiche le texte d'etat (zone / posture) sur un bandeau semi-oppaque
+// en haut de la fenetre video, pour rester lisible quel que soit le
+// contenu de l'image derriere.
+static void DrawStatusOverlay(HDC hdc)
+{
+    RECT textRect = { 8, 8, VIDEO_WIDTH - 8, 34 };
+
+    HBRUSH bgBrush = CreateSolidBrush(RGB(0, 0, 0));
+    FillRect(hdc, &textRect, bgBrush);
+    DeleteObject(bgBrush);
+
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(255, 255, 0));
+    TextOutA(hdc, 12, 12, g_overlayStatusText, static_cast<int>(lstrlenA(g_overlayStatusText)));
+}
+
 static LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
@@ -379,6 +585,10 @@ static LRESULT CALLBACK VideoWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 &g_bmi,
                 DIB_RGB_COLORS,
                 SRCCOPY);
+
+            DrawSkeletonOverlay(hdc);
+            DrawStatusOverlay(hdc);
+
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -584,14 +794,18 @@ bool InitKinect()
 // Traite une frame de squelette. Se verrouille sur le TrackingID du
 // premier squelette tracke rencontre et ignore tout autre joueur qui
 // entrerait dans le champ tant que celui-ci reste visible. Si le
-// joueur verrouille sort du champ, le verrou est relache et le
-// prochain squelette tracke prend sa place.
+// joueur verrouille sort du champ (ou devient trop loin, voir le
+// filtrage par profondeur), le verrou est relache et le prochain
+// squelette tracke et suffisamment proche prend sa place.
 //
 // Pour chaque frame du joueur verrouille :
 //   - calcule la zone gauche/milieu/droite (axe X) et la posture
 //     debout/saut/accroupi (axe Y, relative a la reference calibree)
 //   - sur CHANGEMENT d'etat, envoie la commande clavier correspondant
 //     a la transition (voir SendZoneMovement / SendPostureCommand)
+//   - gere le maintien de la touche 'S' sur sejour prolonge en MILIEU
+//   - met a jour la projection du squelette et le texte d'etat pour
+//     l'overlay video (voir UpdateSkeletonOverlay / g_overlayStatusText)
 //   - affiche l'etat courant dans la console (sur changement)
 void ProcessSkeletonFrame()
 {
@@ -605,6 +819,9 @@ void ProcessSkeletonFrame()
     static Posture lastPosture;
     static bool hasLastPosture = false;
 
+    static MiddleHoldState middleHoldState = MiddleHoldState::IDLE;
+    static DWORD           middleHoldTick  = 0; // sert a la fois pour l'entree en MILIEU et pour le debut du hold
+
     const NUI_SKELETON_DATA* pLocked = NULL;
 
     // Cherche le squelette deja verrouille dans cette frame
@@ -616,34 +833,49 @@ void ProcessSkeletonFrame()
             if (IsSkeletonStateUsable(s.eTrackingState) &&
                 s.dwTrackingID == g_lockedTrackingID)
             {
-                pLocked = &s;
-                break;
+                // Le squelette verrouille est retrouve dans cette frame,
+                // mais s'il est desormais trop loin, on le traite comme
+                // perdu (pLocked reste NULL -> "Joueur perdu" ci-dessous).
+                if (IsSkeletonWithinDepthRange(s))
+                    pLocked = &s;
+
+                break; // ID trouve, inutile de continuer la recherche
             }
         }
 
         if (pLocked == NULL)
         {
-            // Le joueur verrouille a quitte le champ : on relache le verrou
+            // Le joueur verrouille a quitte le champ (ou est trop loin) :
+            // on relache le verrou.
             std::cout << "Joueur perdu, en attente d'un nouveau squelette...\n";
             g_lockedTrackingID = 0;
             hasLastZone     = false;
             hasLastPosture  = false;
             ResetYCalibration();
+            g_hasSkeletonOverlay = false;
+            if (middleHoldState == MiddleHoldState::HOLDING)
+                SendKeyCommand("start_up"); // evite de laisser 'S' enfoncee si le joueur disparait
+            middleHoldState = MiddleHoldState::IDLE;
+            snprintf(g_overlayStatusText, sizeof(g_overlayStatusText), "En attente d'un squelette...");
         }
     }
 
     // Pas de squelette verrouille : on prend le premier tracke rencontre
+    // qui soit egalement dans la plage de profondeur autorisee.
     if (g_lockedTrackingID == 0)
     {
         for (int i = 0; i < NUI_SKELETON_COUNT; ++i)
         {
             const NUI_SKELETON_DATA& s = skeletonFrame.SkeletonData[i];
-            if (IsSkeletonStateUsable(s.eTrackingState))
+            if (IsSkeletonStateUsable(s.eTrackingState) &&
+                IsSkeletonWithinDepthRange(s))
             {
                 g_lockedTrackingID = s.dwTrackingID;
                 pLocked = &s;
                 std::cout << "Squelette verrouille (TrackingID = "
-                          << g_lockedTrackingID << ")\n";
+                          << g_lockedTrackingID << ", z = "
+                          << s.SkeletonPositions[NUI_SKELETON_POSITION_HIP_CENTER].z
+                          << " m)\n";
                 ResetYCalibration();
                 break;
             }
@@ -651,7 +883,10 @@ void ProcessSkeletonFrame()
     }
 
     if (pLocked == NULL)
-        return; // personne de tracke pour l'instant
+    {
+        g_hasSkeletonOverlay = false;
+        return; // personne de tracke (ou trop loin) pour l'instant
+    }
 
     // hip_center = joint le plus stable pour suivre la position
     // globale du corps (en metres, X negatif = gauche du capteur,
@@ -659,6 +894,12 @@ void ProcessSkeletonFrame()
     const Vector4& hipCenter = pLocked->SkeletonPositions[NUI_SKELETON_POSITION_HIP_CENTER];
     float currentX = hipCenter.x;
     float currentY = hipCenter.y;
+
+    // Met a jour la projection du squelette pour l'overlay video,
+    // independamment de la calibration Y ci-dessous.
+    UpdateSkeletonOverlay(*pLocked);
+    if (g_hVideoWindow != NULL)
+        InvalidateRect(g_hVideoWindow, NULL, FALSE);
 
     // --- Calibration de la reference Y --------------------------------
     // Pendant les premieres frames suivant le verrouillage, on suppose
@@ -680,6 +921,7 @@ void ProcessSkeletonFrame()
         {
             // Tant que la calibration n'est pas terminee, on ne peut pas
             // encore evaluer la posture de facon fiable.
+            snprintf(g_overlayStatusText, sizeof(g_overlayStatusText), "Calibration en cours...");
             return;
         }
     }
@@ -687,6 +929,11 @@ void ProcessSkeletonFrame()
     Zone currentZone       = GetZoneFromX(currentX);
     Posture currentPosture = GetPostureFromY(currentY, g_baselineHipY);
     float  deltaY          = currentY - g_baselineHipY;
+
+    snprintf(g_overlayStatusText, sizeof(g_overlayStatusText),
+             "Zone: %s (x=%.2fm)  Posture: %s (dy=%.2fm)",
+             ZoneToString(currentZone), currentX,
+             PostureToString(currentPosture), deltaY);
 
     // Mode debug : affiche le delta Y brut a CHAQUE frame, meme sans
     // franchissement de seuil. Sert a lire les valeurs reelles produites
@@ -708,6 +955,65 @@ void ProcessSkeletonFrame()
 
     if (!hasLastPosture || currentPosture != lastPosture)
         SendPostureCommand(currentPosture); // no-op automatique si DEBOUT
+
+    // --- Maintien de 'S' sur sejour prolonge en zone MILIEU -------------
+    if (currentZone == Zone::MILIEU)
+    {
+        DWORD now = GetTickCount();
+
+        switch (middleHoldState)
+        {
+            case MiddleHoldState::IDLE:
+                // Premiere frame en MILIEU : demarre le chronometre d'attente.
+                middleHoldTick  = now;
+                middleHoldState = MiddleHoldState::WAITING;
+                break;
+
+            case MiddleHoldState::WAITING:
+                if (now - middleHoldTick >= MIDDLE_HOLD_BEFORE_PRESS_MS)
+                {
+                    SendKeyCommand("start_down");
+                    std::cout << "Maintien MILIEU >= 3s : touche S enfoncee\n";
+                    middleHoldTick  = now; // redemarre le chrono pour la duree du hold
+                    middleHoldState = MiddleHoldState::HOLDING;
+                }
+                break;
+
+            case MiddleHoldState::HOLDING:
+                if (now - middleHoldTick >= MIDDLE_HOLD_DURATION_MS)
+                {
+                    SendKeyCommand("start_up");
+                    std::cout << "Fin du maintien : touche S relachee\n";
+                    middleHoldState = MiddleHoldState::RELEASED;
+                }
+                break;
+            
+            case MiddleHoldState::RELEASED:
+                // Touche relachee : si le joueur est toujours en MILIEU,
+                // on relance le cycle de detection apres une courte pause
+                // (evite un redeclenchement instantane), plutot que de
+                // rester bloque en RELEASED pour le reste du sejour.
+                if (now - middleHoldTick >= MIDDLE_HOLD_RETRIGGER_DELAY_MS)
+                {
+                    middleHoldTick  = now;
+                    middleHoldState = MiddleHoldState::WAITING;
+                }
+                break;
+
+            default:
+                break; // deja joue pour ce sejour en MILIEU, rien a faire
+        }
+    }
+    else
+    {
+        // Le joueur a quitte la zone MILIEU : si la touche etait
+        // enfoncee, on la relache immediatement pour ne jamais la
+        // laisser bloquee, puis on reinitialise pour un futur sejour.
+        if (middleHoldState == MiddleHoldState::HOLDING)
+            SendKeyCommand("start_up");
+
+        middleHoldState = MiddleHoldState::IDLE;
+    }
 
     // N'affiche que lors d'un changement de zone ou de posture pour ne
     // pas spammer la console ; retire ces conditions si tu veux l'etat
