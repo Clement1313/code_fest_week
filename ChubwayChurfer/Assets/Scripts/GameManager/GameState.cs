@@ -358,11 +358,6 @@ public class GameState : AState
 		if (pauseStatus) Pause();
 	}
 
-    void OnApplicationFocus(bool focusStatus)
-    {
-        if (!focusStatus) Pause();
-    }
-
     public void Pause(bool displayMenu = true)
 	{
 		//check if we aren't finished OR if we aren't already in pause (as that would mess states)

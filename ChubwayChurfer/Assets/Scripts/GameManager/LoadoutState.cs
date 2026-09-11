@@ -72,6 +72,10 @@ public class LoadoutState : AState
     protected RectTransform m_HoldVisual;
     protected Sprite m_HoldCircleSprite;
     protected GameObject m_EpitaLogo;
+    protected GameObject m_ImageLogo;
+    protected Material m_EpitaOutlineMaterial;
+    protected Material m_ImageOutlineMaterial;
+    protected float m_BrandAnimationStartTime;
     protected RectTransform m_LeaderboardPanel;
     protected Vector2 m_LastLeaderboardCanvasSize = new Vector2(-1.0f, -1.0f);
     protected float m_HoldStartTimer;
@@ -146,13 +150,15 @@ public class LoadoutState : AState
         if (inventoryCanvas == null)
             return;
 
+        m_BrandAnimationStartTime = Time.unscaledTime;
+
         m_EpitaLogo = SetupBrandLogo(
             "EpitaLogo",
             "UI/Branding/EPITA",
             new Vector2(205.0f, 145.0f),
             new Vector2(350.0f, 237.0f));
 
-        SetupBrandLogo(
+        m_ImageLogo = SetupBrandLogo(
             "ImageLogo",
             "UI/Branding/IMAGE",
             new Vector2(205.0f, -125.0f),
@@ -183,6 +189,8 @@ public class LoadoutState : AState
         logoRect.pivot = new Vector2(0.5f, 0.5f);
         logoRect.anchoredPosition = position;
         logoRect.sizeDelta = size;
+        logoRect.localScale = Vector3.one;
+        logoRect.localRotation = Quaternion.identity;
 
         Image logoImage = logoObject.GetComponent<Image>();
         logoImage.sprite = logoSprite;
@@ -197,15 +205,84 @@ public class LoadoutState : AState
                 Destroy(effects[i]);
         }
 
-        Outline logoOutline = logoObject.GetComponent<Outline>();
-        if (logoOutline == null)
-            logoOutline = logoObject.AddComponent<Outline>();
-        logoOutline.effectColor = new Color(0.02f, 0.03f, 0.06f, 0.95f);
-        logoOutline.effectDistance = new Vector2(5.0f, -5.0f);
-        logoOutline.useGraphicAlpha = true;
+        Outline[] oldOutlines = logoObject.GetComponents<Outline>();
+        for (int i = 0; i < oldOutlines.Length; ++i)
+            Destroy(oldOutlines[i]);
+
+        ApplyWhiteLogoOutline(logoImage, objectName, size);
 
         logoObject.transform.SetAsLastSibling();
         return logoObject;
+    }
+
+    void ApplyWhiteLogoOutline(Image logoImage, string objectName, Vector2 displaySize)
+    {
+        Shader outlineShader = Resources.Load<Shader>("UI/Branding/UIWhiteOutline");
+        if (outlineShader == null)
+        {
+            Debug.LogWarning("White logo outline shader could not be loaded.");
+            return;
+        }
+
+        Material outlineMaterial = objectName == "EpitaLogo"
+            ? m_EpitaOutlineMaterial
+            : m_ImageOutlineMaterial;
+
+        if (outlineMaterial == null)
+        {
+            outlineMaterial = new Material(outlineShader);
+            outlineMaterial.name = objectName + " White Outline";
+
+            if (objectName == "EpitaLogo")
+                m_EpitaOutlineMaterial = outlineMaterial;
+            else
+                m_ImageOutlineMaterial = outlineMaterial;
+        }
+
+        const float outlineWidth = 2.0f;
+        outlineMaterial.SetColor("_OutlineColor", Color.white);
+        outlineMaterial.SetVector(
+            "_OutlineUV",
+            new Vector4(outlineWidth / displaySize.x, outlineWidth / displaySize.y, 0.0f, 0.0f));
+        outlineMaterial.SetVector(
+            "_OutlinePixels",
+            new Vector4(outlineWidth, outlineWidth, 0.0f, 0.0f));
+        logoImage.material = outlineMaterial;
+    }
+
+    void UpdateBrandLogoAnimations()
+    {
+        float elapsed = Time.unscaledTime - m_BrandAnimationStartTime;
+
+        AnimateBrandLogo(
+            m_EpitaLogo,
+            new Vector2(205.0f, 145.0f),
+            elapsed,
+            0.0f);
+
+        AnimateBrandLogo(
+            m_ImageLogo,
+            new Vector2(205.0f, -125.0f),
+            elapsed,
+            Mathf.PI);
+    }
+
+    void AnimateBrandLogo(GameObject logoObject, Vector2 basePosition, float elapsed, float phase)
+    {
+        if (logoObject == null || !logoObject.activeInHierarchy)
+            return;
+
+        RectTransform logoRect = logoObject.GetComponent<RectTransform>();
+        if (logoRect == null)
+            return;
+
+        float floatWave = Mathf.Sin(elapsed * 1.25f + phase);
+        float pulseWave = Mathf.Sin(elapsed * 1.65f + phase);
+        float rotationWave = Mathf.Sin(elapsed * 0.9f + phase);
+
+        logoRect.anchoredPosition = basePosition + Vector2.up * (floatWave * 3.0f);
+        logoRect.localScale = Vector3.one * (1.0f + pulseWave * 0.012f);
+        logoRect.localRotation = Quaternion.Euler(0.0f, 0.0f, rotationWave * 0.8f);
     }
 
     void SetupKinectStartInstruction()
@@ -407,7 +484,7 @@ public class LoadoutState : AState
                 m_HoldProgress.fillAmount = Mathf.Clamp01(
                     m_HoldStartTimer / k_HoldToStartDuration);
             if (m_HoldStatus != null)
-                m_HoldStatus.text = "AU CENTRE, MAINTENEZ S 3 SEC";
+                m_HoldStatus.text = "RESTEZ AU MILIEU 3 SECONDES";
             return;
         }
 
@@ -572,7 +649,7 @@ public class LoadoutState : AState
             if(interactable)
             {
                 m_CanStart = true;
-                ResetHoldToStart("AU CENTRE, MAINTENEZ S 3 SEC");
+                ResetHoldToStart("RESTEZ AU MILIEU 3 SECONDES");
 
                 //we can always enabled, as the parent will be disabled if tutorial is already done
                 tutorialPrompt.SetActive(true);
@@ -581,6 +658,7 @@ public class LoadoutState : AState
 
         UpdateHoldToStart();
         UpdateLeaderboardLayout();
+        UpdateBrandLogoAnimations();
 
         if(m_Character != null)
         {
