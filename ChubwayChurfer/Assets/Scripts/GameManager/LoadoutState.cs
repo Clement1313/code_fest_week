@@ -138,7 +138,7 @@ public class LoadoutState : AState
 
         charNameDisplay.enabled = true;
         charNameDisplay.color = Color.white;
-        charNameDisplay.text = "CHABWAY\nCHURFER";
+        charNameDisplay.text = "CHABWAY\nSURFER";
 
         Transform oldLogo = charNameDisplay.transform.Find("GameLogo");
         if (oldLogo != null)

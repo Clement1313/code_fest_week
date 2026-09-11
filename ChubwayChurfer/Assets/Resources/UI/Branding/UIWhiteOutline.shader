@@ -1,4 +1,4 @@
-Shader "UI/Chabway White Logo Outline"
+Shader "UI/Chabway Surfer/White Logo Outline"
 {
     Properties
     {
